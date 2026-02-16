@@ -1,0 +1,27 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# Node / Dashboard
+dashboard/node_modules/
+dashboard/dist/
+
+# Foundry
+contracts/out/
+contracts/cache/
+contracts/lib/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Env
+.env
+.env.*
