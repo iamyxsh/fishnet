@@ -23,3 +23,5 @@ subtle = "2"
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
 dirs = "6"
+rust-embed = "8"
+mime_guess = "2"

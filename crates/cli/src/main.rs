@@ -18,9 +18,9 @@ async fn main() {
 
     let app = create_router(state);
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:8473")
-        .await
-        .unwrap();
-    println!("fishnet dashboard API listening on http://127.0.0.1:8473");
+    let host = std::env::var("FISHNET_HOST").unwrap_or_else(|_| "127.0.0.1".into());
+    let addr = format!("{host}:8473");
+    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+    println!("fishnet dashboard API listening on http://{addr}");
     axum::serve(listener, app).await.unwrap();
 }

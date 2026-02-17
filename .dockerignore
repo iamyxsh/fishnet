@@ -1,0 +1,44 @@
+# Rust
+target/
+**/*.rs.bk
+
+# Node
+dashboard/node_modules/
+dashboard/dist/
+
+# Foundry
+contracts/out/
+contracts/cache/
+contracts/lib/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.*
+
+# Docker
+Dockerfile
+Dockerfile.*
+docker-compose.yml
+docker-compose*.yml
+
+# Misc
+docs/
+policies/
+skill/
+postman_collection.json
+README.md
+LICENSE

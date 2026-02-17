@@ -1,4 +1,6 @@
 pub mod auth;
+#[cfg(feature = "embed-dashboard")]
+pub mod dashboard;
 pub mod middleware;
 pub mod password;
 pub mod rate_limit;
@@ -23,11 +25,16 @@ pub fn create_router(state: AppState) -> Router {
             middleware::require_auth,
         ));
 
-    Router::new()
+    let router = Router::new()
         .merge(public_routes)
         .merge(protected_routes)
         .layer(CorsLayer::permissive())
-        .with_state(state)
+        .with_state(state);
+
+    #[cfg(feature = "embed-dashboard")]
+    let router = router.fallback(dashboard::static_handler);
+
+    router
 }
 
 #[cfg(test)]
