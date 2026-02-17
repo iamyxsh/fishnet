@@ -4,6 +4,23 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Fishnet Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      // Dark is default. If user stored "light", add .light class to prevent flash.
+      if (localStorage.getItem("theme") === "light") {
+        document.documentElement.classList.add("light");
+        document.documentElement.style.background = "#FAFAFA";
+      }
+    </script>
+    <style>
+      /* Prevent flash — dark is default */
+      html { background: #0A0A0B; }
+    </style>
   </head>
   <body>
     <div id="root"></div>
