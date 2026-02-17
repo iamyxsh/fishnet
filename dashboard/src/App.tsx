@@ -1,14 +1,17 @@
 import { lazy, Suspense } from "react";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import { ThemeContext } from "@/hooks/use-theme";
-import { useThemeProvider } from "@/hooks/use-theme";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { ThemeContext, useThemeProvider } from "@/hooks/use-theme";
+import { AuthContext, useAuthProvider } from "@/hooks/use-auth";
 import { Shell } from "@/components/layout/Shell";
+import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
+import { PublicRoute } from "@/components/auth/PublicRoute";
 import { ROUTES } from "@/lib/constants";
 import { Skeleton } from "@/components/ui/Skeleton";
 
 // Route-based code splitting
 const DashboardPage = lazy(() => import("@/pages/dashboard/DashboardPage"));
 const SettingsPage = lazy(() => import("@/pages/settings/SettingsPage"));
+const LoginPage = lazy(() => import("@/pages/login/LoginPage"));
 
 function PageLoader() {
   return (
@@ -25,31 +28,63 @@ function PageLoader() {
 
 export default function App() {
   const themeValue = useThemeProvider();
+  const authValue = useAuthProvider();
 
   return (
-    <ThemeContext value={themeValue}>
-      <BrowserRouter>
-        <Routes>
-          <Route element={<Shell />}>
+    <AuthContext value={authValue}>
+      <ThemeContext value={themeValue}>
+        <BrowserRouter>
+          <Routes>
+            {/* Public: Login page */}
             <Route
-              index
+              path={ROUTES.LOGIN}
               element={
-                <Suspense fallback={<PageLoader />}>
-                  <DashboardPage />
-                </Suspense>
+                <PublicRoute>
+                  <Suspense
+                    fallback={
+                      <div
+                        className="h-screen"
+                        style={{ background: "#FAFAFA" }}
+                      />
+                    }
+                  >
+                    <LoginPage />
+                  </Suspense>
+                </PublicRoute>
               }
             />
+
+            {/* Protected: Dashboard shell */}
             <Route
-              path={ROUTES.SETTINGS}
               element={
-                <Suspense fallback={<PageLoader />}>
-                  <SettingsPage />
-                </Suspense>
+                <ProtectedRoute>
+                  <Shell />
+                </ProtectedRoute>
               }
-            />
-          </Route>
-        </Routes>
-      </BrowserRouter>
-    </ThemeContext>
+            >
+              <Route
+                index
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <DashboardPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path={ROUTES.SETTINGS}
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <SettingsPage />
+                  </Suspense>
+                }
+              />
+            </Route>
+
+            {/* Catch-all → login */}
+            <Route path="*" element={<Navigate to={ROUTES.LOGIN} replace />} />
+          </Routes>
+        </BrowserRouter>
+      </ThemeContext>
+    </AuthContext>
   );
 }

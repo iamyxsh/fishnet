@@ -53,6 +53,31 @@ export interface RecentActivityResponse {
   activities: RecentActivity[];
 }
 
+// --- Auth ---
+export interface AuthStatusResponse {
+  initialized: boolean;
+  authenticated: boolean;
+}
+
+export interface LoginResponse {
+  token: string;
+  expires_at: string;
+}
+
+export interface SetupResponse {
+  success: boolean;
+  message: string;
+}
+
+export interface LogoutResponse {
+  success: boolean;
+}
+
+export interface AuthErrorResponse {
+  error: string;
+  retry_after_seconds?: number;
+}
+
 // --- Generic ---
 export interface ApiError {
   error: string;

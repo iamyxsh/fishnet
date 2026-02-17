@@ -3,6 +3,10 @@ import type {
   SpendResponse,
   RecentActivityResponse,
   RecentActivity,
+  AuthStatusResponse,
+  LoginResponse,
+  SetupResponse,
+  LogoutResponse,
 } from "./types";
 
 const mockRecentActivity: RecentActivity[] = [
@@ -66,6 +70,27 @@ const mockRecentActivity: RecentActivity[] = [
 ];
 
 const routes: Record<string, (opts?: RequestInit) => unknown> = {
+  // Auth routes — mock always returns authenticated
+  "GET /auth/status": (): AuthStatusResponse => ({
+    initialized: true,
+    authenticated: true,
+  }),
+
+  "POST /auth/login": (): LoginResponse => ({
+    token: "fn_sess_mock_dev_token",
+    expires_at: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(),
+  }),
+
+  "POST /auth/setup": (): SetupResponse => ({
+    success: true,
+    message: "password configured successfully",
+  }),
+
+  "POST /auth/logout": (): LogoutResponse => ({
+    success: true,
+  }),
+
+  // Dashboard routes
   "GET /status": (): StatusResponse => ({
     proxy: "running",
     uptime_secs: 86400,

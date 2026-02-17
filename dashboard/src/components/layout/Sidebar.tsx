@@ -1,5 +1,7 @@
-import { NavLink } from "react-router-dom";
+import { NavLink, useNavigate } from "react-router-dom";
+import { useCallback } from "react";
 import { cn } from "@/lib/cn";
+import { useAuth } from "@/hooks/use-auth";
 import { ROUTES } from "@/lib/constants";
 import {
   LayoutDashboard,
@@ -49,6 +51,14 @@ export function Sidebar({
   proxyStatus = "running",
   version = "0.1.0",
 }: SidebarProps) {
+  const { logout } = useAuth();
+  const navigate = useNavigate();
+
+  const handleSignOut = useCallback(async () => {
+    await logout();
+    navigate(ROUTES.LOGIN);
+  }, [logout, navigate]);
+
   return (
     <aside
       className={cn(
@@ -138,6 +148,7 @@ export function Sidebar({
 
         {/* Sign out */}
         <button
+          onClick={handleSignOut}
           className={cn(
             "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs text-text-tertiary",
             "transition-all duration-150 hover:bg-danger-dim hover:text-danger",

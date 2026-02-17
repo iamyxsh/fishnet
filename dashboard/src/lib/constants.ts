@@ -1,6 +1,7 @@
 export const ROUTES = {
   HOME: "/",
   SETTINGS: "/settings",
+  LOGIN: "/login",
 } as const;
 
 export const POLLING_INTERVALS = {

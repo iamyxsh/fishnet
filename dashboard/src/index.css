@@ -226,3 +226,13 @@ body {
 .nav-active-bar {
   animation: slide-in-left 200ms cubic-bezier(0.33, 1, 0.68, 1) both;
 }
+
+/* ── Login page scan line ──────────────────────── */
+@keyframes scan-line {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
+}
+
+.login-scan-line {
+  animation: scan-line 8s linear infinite;
+}
