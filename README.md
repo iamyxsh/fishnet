@@ -22,6 +22,61 @@ Your agent never touches real credentials. Every request flows through Fishnet. 
 
 Anyone running an AI agent with access to paid APIs or real money. If your agent has an OpenAI key, a Binance key, or a funded wallet — you need this.
 
+## Getting Started
+
+### Prerequisites
+
+- [Rust](https://rustup.rs/) (1.85+)
+- [Node.js](https://nodejs.org/) (22+)
+- [Docker](https://www.docker.com/) (optional, for containerised deployment)
+
+### Install Dependencies
+
+```sh
+make install      # install frontend (dashboard) npm packages
+```
+
+### Development
+
+```sh
+make dev          # start API + Vite dev server in parallel
+                  # API  → http://localhost:8473
+                  # App  → http://localhost:5173 (proxies /api → :8473)
+
+make dev-api      # backend only
+make dev-fe       # frontend only (assumes API already running)
+make dev-watch    # backend with auto-reload (needs: cargo install cargo-watch)
+```
+
+### Production
+
+#### Single binary (recommended)
+
+Builds the React dashboard into the Rust binary — one file, no external assets.
+
+```sh
+make build-prod   # builds frontend, then compiles with --features embed-dashboard
+./target/release/fishnet
+```
+
+#### Docker
+
+```sh
+make docker-up    # build image & start container (http://localhost:8473)
+make docker-logs  # tail logs
+make docker-down  # stop
+make docker-clean # remove container, volume, and image
+```
+
+### Quality
+
+```sh
+make test         # run Rust tests
+make fmt          # format code
+make check        # clippy lints
+make clean        # remove all build artifacts
+```
+
 ## Status
 
 🚧 **Pre-release** — Actively building. Star the repo to follow along.
