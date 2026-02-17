@@ -9,3 +9,6 @@ name = "fishnet"
 path = "src/main.rs"
 
 [dependencies]
+fishnet-server = { path = "../server" }
+tokio.workspace = true
+axum.workspace = true

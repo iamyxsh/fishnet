@@ -1,0 +1,357 @@
+{
+	"info": {
+		"name": "Fishnet API",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"description": "Fishnet dashboard API (localhost:8473)"
+	},
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://127.0.0.1:8473"
+		},
+		{
+			"key": "token",
+			"value": ""
+		}
+	],
+	"item": [
+		{
+			"name": "Auth",
+			"description": "Authentication endpoints — setup, login, logout, and status checks",
+			"item": [
+				{
+					"name": "Status",
+					"description": "GET /api/auth/status — check initialization and session validity",
+					"item": [
+						{
+							"name": "Status (before setup)",
+							"request": {
+								"method": "GET",
+								"url": {
+									"raw": "{{baseUrl}}/api/auth/status",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "auth", "status"]
+								}
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test('Status 200', () => pm.response.to.have.status(200));",
+											"",
+											"pm.test('Not initialized, not authenticated', () => {",
+											"    const body = pm.response.json();",
+											"    pm.expect(body.initialized).to.be.false;",
+											"    pm.expect(body.authenticated).to.be.false;",
+											"});"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "Status (authenticated)",
+							"request": {
+								"method": "GET",
+								"url": {
+									"raw": "{{baseUrl}}/api/auth/status",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "auth", "status"]
+								},
+								"header": [
+									{ "key": "Authorization", "value": "Bearer {{token}}" }
+								]
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test('Status 200', () => pm.response.to.have.status(200));",
+											"",
+											"pm.test('Initialized and authenticated', () => {",
+											"    const body = pm.response.json();",
+											"    pm.expect(body.initialized).to.be.true;",
+											"    pm.expect(body.authenticated).to.be.true;",
+											"});"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "Status (after logout)",
+							"request": {
+								"method": "GET",
+								"url": {
+									"raw": "{{baseUrl}}/api/auth/status",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "auth", "status"]
+								},
+								"header": [
+									{ "key": "Authorization", "value": "Bearer {{token}}" }
+								]
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test('Status 200', () => pm.response.to.have.status(200));",
+											"",
+											"pm.test('Initialized but NOT authenticated', () => {",
+											"    const body = pm.response.json();",
+											"    pm.expect(body.initialized).to.be.true;",
+											"    pm.expect(body.authenticated).to.be.false;",
+											"});"
+										]
+									}
+								}
+							]
+						}
+					]
+				},
+				{
+					"name": "Setup",
+					"description": "POST /api/auth/setup — one-time password configuration",
+					"item": [
+						{
+							"name": "Setup password",
+							"request": {
+								"method": "POST",
+								"url": {
+									"raw": "{{baseUrl}}/api/auth/setup",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "auth", "setup"]
+								},
+								"header": [
+									{ "key": "Content-Type", "value": "application/json" }
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"password\": \"test1234\",\n    \"confirm\": \"test1234\"\n}"
+								}
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test('Status 200', () => pm.response.to.have.status(200));",
+											"",
+											"pm.test('Setup successful', () => {",
+											"    const body = pm.response.json();",
+											"    pm.expect(body.success).to.be.true;",
+											"    pm.expect(body.message).to.include('configured');",
+											"});"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "Setup again (409 conflict)",
+							"request": {
+								"method": "POST",
+								"url": {
+									"raw": "{{baseUrl}}/api/auth/setup",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "auth", "setup"]
+								},
+								"header": [
+									{ "key": "Content-Type", "value": "application/json" }
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"password\": \"other123\",\n    \"confirm\": \"other123\"\n}"
+								}
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test('Status 409 Conflict', () => pm.response.to.have.status(409));",
+											"",
+											"pm.test('Error message', () => {",
+											"    const body = pm.response.json();",
+											"    pm.expect(body.error).to.include('already configured');",
+											"});"
+										]
+									}
+								}
+							]
+						}
+					]
+				},
+				{
+					"name": "Login",
+					"description": "POST /api/auth/login — authenticate and receive session token",
+					"item": [
+						{
+							"name": "Login (wrong password)",
+							"request": {
+								"method": "POST",
+								"url": {
+									"raw": "{{baseUrl}}/api/auth/login",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "auth", "login"]
+								},
+								"header": [
+									{ "key": "Content-Type", "value": "application/json" }
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"password\": \"wrongpassword\"\n}"
+								}
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test('Status 401 Unauthorized', () => pm.response.to.have.status(401));",
+											"",
+											"pm.test('Invalid password error', () => {",
+											"    const body = pm.response.json();",
+											"    pm.expect(body.error).to.eql('invalid password');",
+											"});"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "Login (correct password)",
+							"request": {
+								"method": "POST",
+								"url": {
+									"raw": "{{baseUrl}}/api/auth/login",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "auth", "login"]
+								},
+								"header": [
+									{ "key": "Content-Type", "value": "application/json" }
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"password\": \"test1234\"\n}"
+								}
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test('Status 200', () => pm.response.to.have.status(200));",
+											"",
+											"pm.test('Returns session token', () => {",
+											"    const body = pm.response.json();",
+											"    pm.expect(body.token).to.match(/^fn_sess_/);",
+											"    pm.expect(body.expires_at).to.be.a('string');",
+											"",
+											"    // Save token for subsequent requests",
+											"    pm.collectionVariables.set('token', body.token);",
+											"});"
+										]
+									}
+								}
+							]
+						}
+					]
+				},
+				{
+					"name": "Logout",
+					"description": "POST /api/auth/logout — invalidate session token (protected)",
+					"item": [
+						{
+							"name": "Logout (no token — 401)",
+							"request": {
+								"method": "POST",
+								"url": {
+									"raw": "{{baseUrl}}/api/auth/logout",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "auth", "logout"]
+								}
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test('Status 401 Unauthorized', () => pm.response.to.have.status(401));",
+											"",
+											"pm.test('Missing auth header error', () => {",
+											"    const body = pm.response.json();",
+											"    pm.expect(body.error).to.include('authorization header');",
+											"});"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "Logout (with token)",
+							"request": {
+								"method": "POST",
+								"url": {
+									"raw": "{{baseUrl}}/api/auth/logout",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "auth", "logout"]
+								},
+								"header": [
+									{ "key": "Authorization", "value": "Bearer {{token}}" }
+								]
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test('Status 200', () => pm.response.to.have.status(200));",
+											"",
+											"pm.test('Logout successful', () => {",
+											"    const body = pm.response.json();",
+											"    pm.expect(body.success).to.be.true;",
+											"});"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "Logout again (token invalidated — 401)",
+							"request": {
+								"method": "POST",
+								"url": {
+									"raw": "{{baseUrl}}/api/auth/logout",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "auth", "logout"]
+								},
+								"header": [
+									{ "key": "Authorization", "value": "Bearer {{token}}" }
+								]
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test('Status 401 — token no longer valid', () => pm.response.to.have.status(401));",
+											"",
+											"pm.test('Expired token error', () => {",
+											"    const body = pm.response.json();",
+											"    pm.expect(body.error).to.include('invalid or expired');",
+											"});"
+										]
+									}
+								}
+							]
+						}
+					]
+				}
+			]
+		}
+	]
+}
