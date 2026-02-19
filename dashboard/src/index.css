@@ -1,0 +1,238 @@
+@import "tailwindcss";
+
+@theme {
+  /* ── Font families ─────────────────────────────── */
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", "Fira Code", monospace;
+
+  /* ── Dark theme (primary — dashboard default) ─── */
+  --color-bg: #0A0A0B;
+  --color-bg-secondary: #111113;
+  --color-bg-tertiary: #1A1A1D;
+  --color-surface: #111113;
+  --color-surface-raised: #1A1A1D;
+  --color-surface-hover: #222225;
+  --color-surface-input: #161618;
+  --color-border: #2A2A2E;
+  --color-border-subtle: #1F1F23;
+
+  --color-text: #F5F5F7;
+  --color-text-secondary: #A1A1AA;
+  --color-text-tertiary: #71717A;
+  --color-text-inverse: #0A0A0B;
+
+  /* Brand = Red accent (#E63946) */
+  --color-brand: #E63946;
+  --color-brand-hover: #CC2D3B;
+  --color-brand-muted: rgba(230, 57, 70, 0.12);
+  --color-primary: #E63946;
+  --color-primary-hover: #CC2D3B;
+
+  /* Semantic colors */
+  --color-success: #22C55E;
+  --color-success-dim: rgba(34, 197, 94, 0.12);
+  --color-warning: #F59E0B;
+  --color-warning-dim: rgba(245, 158, 11, 0.12);
+  --color-danger: #EF4444;
+  --color-danger-hover: #DC2626;
+  --color-danger-dim: rgba(239, 68, 68, 0.12);
+  --color-info: #3B82F6;
+  --color-info-dim: rgba(59, 130, 246, 0.12);
+  --color-purple: #8B5CF6;
+  --color-purple-dim: rgba(139, 92, 246, 0.12);
+
+  /* Service indicator colors */
+  --color-svc-openai: #22C55E;
+  --color-svc-anthropic: #3B82F6;
+  --color-svc-binance: #F59E0B;
+  --color-svc-github: #A1A1AA;
+  --color-svc-stripe: #8B5CF6;
+  --color-svc-custom: #8B5CF6;
+
+  /* Sidebar */
+  --color-sidebar: #111113;
+  --color-sidebar-text: #A1A1AA;
+  --color-sidebar-active: rgba(230, 57, 70, 0.12);
+  --color-sidebar-hover: #222225;
+  --color-sidebar-border: #2A2A2E;
+  --color-sidebar-border-subtle: #1F1F23;
+  --color-sidebar-logo: #F5F5F7;
+
+  /* Accent (alias for brand for backward compat) */
+  --color-accent: #E63946;
+  --color-accent-dim: rgba(230, 57, 70, 0.12);
+  --color-accent-bg: rgba(230, 57, 70, 0.12);
+}
+
+/* ── Light mode override ────────────────────────── */
+.light {
+  --color-bg: #FAFAFA;
+  --color-bg-secondary: #F5F5F5;
+  --color-bg-tertiary: #E4E4E7;
+  --color-surface: #FFFFFF;
+  --color-surface-raised: #F5F5F5;
+  --color-surface-hover: #F5F5F5;
+  --color-surface-input: #FFFFFF;
+  --color-border: #E4E4E7;
+  --color-border-subtle: #F5F5F5;
+
+  --color-text: #18181B;
+  --color-text-secondary: #52525B;
+  --color-text-tertiary: #A1A1AA;
+  --color-text-inverse: #FAFAFA;
+
+  --color-sidebar: #FFFFFF;
+  --color-sidebar-text: #52525B;
+  --color-sidebar-active: rgba(230, 57, 70, 0.08);
+  --color-sidebar-hover: #F5F5F5;
+  --color-sidebar-border: #E4E4E7;
+  --color-sidebar-border-subtle: #F5F5F5;
+  --color-sidebar-logo: #18181B;
+}
+
+body {
+  @apply bg-bg text-text antialiased;
+  font-family: var(--font-sans);
+}
+
+/* ── Scrollbar styling ──────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 3px;
+  transition: background 150ms ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-tertiary);
+}
+
+/* ── Focus ring utility ─────────────────────────── */
+.focus-ring {
+  @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/30 focus-visible:ring-offset-2 focus-visible:ring-offset-bg;
+}
+
+/* ── Shimmer skeleton animation ─────────────────── */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--color-bg-tertiary) 0%,
+    var(--color-surface-hover) 40%,
+    var(--color-bg-tertiary) 80%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.8s ease-in-out infinite;
+}
+
+/* ── Card hover lift (border-based, no shadows in dark mode) ── */
+.card-hover {
+  transition: transform 200ms cubic-bezier(0.33, 1, 0.68, 1),
+              border-color 200ms ease;
+}
+
+.card-hover:hover {
+  transform: translateY(-2px);
+  border-color: #3a3a3f;
+}
+
+/* ── Stat card hover (border-based, no shadows in dark mode) ── */
+.stat-card-glow {
+  transition: transform 200ms cubic-bezier(0.33, 1, 0.68, 1),
+              border-color 200ms ease;
+}
+
+.stat-card-glow:hover {
+  transform: translateY(-2px);
+  border-color: rgba(230, 57, 70, 0.2);
+}
+
+/* ── Status dot soft pulse ──────────────────────── */
+@keyframes soft-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4); }
+  50% { opacity: 0.85; box-shadow: 0 0 0 4px rgba(34, 197, 94, 0); }
+}
+
+.status-pulse {
+  animation: soft-pulse 2.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* ── Activity row stagger fade-in ───────────────── */
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 300ms cubic-bezier(0.33, 1, 0.68, 1) both;
+}
+
+/* ── Warning banner subtle left border glow ─────── */
+.warning-glow {
+  box-shadow: inset 3px 0 0 var(--color-warning),
+              -2px 0 12px -4px rgba(245, 158, 11, 0.15);
+}
+
+.danger-glow {
+  box-shadow: inset 3px 0 0 var(--color-danger),
+              -2px 0 12px -4px rgba(239, 68, 68, 0.15);
+}
+
+/* ── Progress bar glow ──────────────────────────── */
+.progress-glow-brand {
+  box-shadow: 0 0 8px rgba(230, 57, 70, 0.3);
+}
+
+.progress-glow-success {
+  box-shadow: 0 0 6px rgba(34, 197, 94, 0.25);
+}
+
+.progress-glow-warning {
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.25);
+}
+
+.progress-glow-info {
+  box-shadow: 0 0 6px rgba(59, 130, 246, 0.25);
+}
+
+/* ── Page content fade-in ───────────────────────── */
+@keyframes page-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.page-enter {
+  animation: page-enter 300ms cubic-bezier(0.33, 1, 0.68, 1) both;
+}
+
+/* ── Nav item active bar animation ──────────────── */
+@keyframes slide-in-left {
+  from { transform: translateY(-50%) scaleY(0); opacity: 0; }
+  to { transform: translateY(-50%) scaleY(1); opacity: 1; }
+}
+
+.nav-active-bar {
+  animation: slide-in-left 200ms cubic-bezier(0.33, 1, 0.68, 1) both;
+}
+
+/* ── Login page scan line ──────────────────────── */
+@keyframes scan-line {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
+}
+
+.login-scan-line {
+  animation: scan-line 8s linear infinite;
+}
