@@ -25,6 +25,7 @@ toml.workspace = true
 notify.workspace = true
 sha3.workspace = true
 reqwest.workspace = true
+rusqlite.workspace = true
 rust-embed = { workspace = true, optional = true }
 mime_guess = { workspace = true, optional = true }
 

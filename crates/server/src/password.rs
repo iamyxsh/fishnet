@@ -6,6 +6,8 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
 
+use crate::constants;
+
 #[derive(Debug, Error)]
 pub enum PasswordError {
     #[error("password already initialized")]
@@ -42,8 +44,8 @@ impl FilePasswordStore {
 
     pub fn default_path() -> PathBuf {
         let mut path = dirs::home_dir().expect("could not determine home directory");
-        path.push(".fishnet");
-        path.push("auth.json");
+        path.push(constants::FISHNET_DIR);
+        path.push(constants::AUTH_FILE);
         path
     }
 
@@ -104,7 +106,7 @@ impl PasswordVerifier for FilePasswordStore {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&self.path, fs::Permissions::from_mode(0o600))?;
+            fs::set_permissions(&self.path, fs::Permissions::from_mode(constants::AUTH_FILE_MODE))?;
         }
 
         let mut cache = self.cache.write().unwrap();

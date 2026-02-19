@@ -7,6 +7,7 @@ use sha3::{Digest, Keccak256};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::alert::{AlertSeverity, AlertStore, AlertType};
+use crate::constants;
 use fishnet_types::config::{
     GuardAction, GuardMode, HashAlgorithm, PromptDriftConfig, PromptSizeGuardConfig,
 };
@@ -130,8 +131,8 @@ impl BaselineStore {
 
     pub fn default_path() -> Option<PathBuf> {
         let mut path = dirs::home_dir()?;
-        path.push(".fishnet");
-        path.push("baselines.json");
+        path.push(constants::FISHNET_DIR);
+        path.push(constants::BASELINES_FILE);
         Some(path)
     }
 }
@@ -265,6 +266,7 @@ pub async fn check_prompt_drift(
     service: &str,
     system_prompt: Option<&str>,
     config: &PromptDriftConfig,
+    alert_enabled: bool,
 ) -> GuardDecision {
     if !config.enabled {
         return GuardDecision::Skipped;
@@ -340,9 +342,11 @@ pub async fn check_prompt_drift(
                         "System prompt changed. Previous: {old_hash} Current: {current_hash}{hash_chars_note}"
                     );
                     eprintln!("[fishnet] ALERT: {message}");
-                    alert_store
-                        .create(AlertType::PromptDrift, AlertSeverity::Critical, service, message)
-                        .await;
+                    if alert_enabled {
+                        alert_store
+                            .create(AlertType::PromptDrift, AlertSeverity::Critical, service, message)
+                            .await;
+                    }
                     GuardDecision::AllowWithAlert
                 }
                 GuardMode::Deny => {
@@ -350,9 +354,11 @@ pub async fn check_prompt_drift(
                         "System prompt changed. Previous: {old_hash} Current: {current_hash}{hash_chars_note}"
                     );
                     eprintln!("[fishnet] DENY: {message}");
-                    alert_store
-                        .create(AlertType::PromptDrift, AlertSeverity::Critical, service, message)
-                        .await;
+                    if alert_enabled {
+                        alert_store
+                            .create(AlertType::PromptDrift, AlertSeverity::Critical, service, message)
+                            .await;
+                    }
                     GuardDecision::Deny(
                         "System prompt drift detected. Request blocked by policy.".to_string(),
                     )
@@ -379,6 +385,7 @@ pub async fn check_prompt_size(
     service: &str,
     total_chars: usize,
     config: &PromptSizeGuardConfig,
+    alert_enabled: bool,
 ) -> GuardDecision {
     if !config.enabled {
         return GuardDecision::Skipped;
@@ -387,7 +394,7 @@ pub async fn check_prompt_size(
     let (measured, limit, unit, approximate) = if config.max_prompt_chars > 0 {
         (total_chars as u64, config.max_prompt_chars, "chars", false)
     } else {
-        let estimated_tokens = (total_chars as u64) / 4;
+        let estimated_tokens = (total_chars as u64) / constants::CHARS_PER_TOKEN;
         (estimated_tokens, config.max_prompt_tokens, "tokens", true)
     };
 
@@ -408,9 +415,11 @@ pub async fn check_prompt_size(
                 "Prompt size {measured_display} {unit} exceeds limit of {limit_display}. Action: denied."
             );
             eprintln!("[fishnet] DENY: {message}");
-            alert_store
-                .create(AlertType::PromptSize, AlertSeverity::Warning, service, message)
-                .await;
+            if alert_enabled {
+                alert_store
+                    .create(AlertType::PromptSize, AlertSeverity::Warning, service, message)
+                    .await;
+            }
             GuardDecision::Deny(format!(
                 "Prompt size {measured_display} {unit} exceeds limit of {limit_display}"
             ))
@@ -420,9 +429,11 @@ pub async fn check_prompt_size(
                 "Oversized prompt: {measured_display} {unit} (limit: {limit_display}). Action: alert only."
             );
             eprintln!("[fishnet] ALERT: {message}");
-            alert_store
-                .create(AlertType::PromptSize, AlertSeverity::Warning, service, message)
-                .await;
+            if alert_enabled {
+                alert_store
+                    .create(AlertType::PromptSize, AlertSeverity::Warning, service, message)
+                    .await;
+            }
             GuardDecision::AllowWithAlert
         }
     }
@@ -616,7 +627,6 @@ mod tests {
 
     #[test]
     fn count_chars_not_bytes_for_multibyte() {
-        // "héllo" is 5 chars but 6 bytes (é is 2 bytes in UTF-8)
         let body = serde_json::json!({
             "messages": [
                 {"role": "user", "content": "héllo"}
@@ -624,7 +634,6 @@ mod tests {
         });
         assert_eq!(count_prompt_chars("openai", &body), 5);
 
-        // Same in array-of-blocks form
         let body = serde_json::json!({
             "messages": [
                 {"role": "user", "content": [
@@ -656,7 +665,6 @@ mod tests {
     #[test]
     fn normalize_with_hash_chars_and_whitespace() {
         let result = normalize_prompt("hello   world\n\nfoo", 10, true);
-        // First 10 chars of "hello   world\n\nfoo" = "hello   wo", then normalize whitespace = "hello wo"
         assert_eq!(result, "hello wo");
     }
 
@@ -694,12 +702,10 @@ mod tests {
         };
 
         let result =
-            check_prompt_drift(&baselines, &alerts, "openai", Some("hello"), &config).await;
+            check_prompt_drift(&baselines, &alerts, "openai", Some("hello"), &config, true).await;
         assert_eq!(result, GuardDecision::Skipped);
 
-        // No baseline captured
         assert!(baselines.baselines.read().await.is_empty());
-        // No alerts
         assert!(alerts.list().await.is_empty());
     }
 
@@ -715,6 +721,7 @@ mod tests {
             "openai",
             Some("You are a helpful assistant."),
             &config,
+            true,
         )
         .await;
         assert_eq!(result, GuardDecision::BaselineCaptured);
@@ -729,11 +736,9 @@ mod tests {
         let config = PromptDriftConfig::default();
         let prompt = "You are a helpful assistant.";
 
-        // First request
-        check_prompt_drift(&baselines, &alerts, "openai", Some(prompt), &config).await;
-        // Second request — same prompt
+        check_prompt_drift(&baselines, &alerts, "openai", Some(prompt), &config, true).await;
         let result =
-            check_prompt_drift(&baselines, &alerts, "openai", Some(prompt), &config).await;
+            check_prompt_drift(&baselines, &alerts, "openai", Some(prompt), &config, true).await;
         assert_eq!(result, GuardDecision::Allow);
         assert!(alerts.list().await.is_empty());
     }
@@ -747,9 +752,9 @@ mod tests {
             ..Default::default()
         };
 
-        check_prompt_drift(&baselines, &alerts, "openai", Some("prompt v1"), &config).await;
+        check_prompt_drift(&baselines, &alerts, "openai", Some("prompt v1"), &config, true).await;
         let result =
-            check_prompt_drift(&baselines, &alerts, "openai", Some("prompt v2"), &config).await;
+            check_prompt_drift(&baselines, &alerts, "openai", Some("prompt v2"), &config, true).await;
         assert_eq!(result, GuardDecision::AllowWithAlert);
 
         let alert_list = alerts.list().await;
@@ -768,15 +773,14 @@ mod tests {
             ..Default::default()
         };
 
-        check_prompt_drift(&baselines, &alerts, "openai", Some("prompt v1"), &config).await;
+        check_prompt_drift(&baselines, &alerts, "openai", Some("prompt v1"), &config, true).await;
         let result =
-            check_prompt_drift(&baselines, &alerts, "openai", Some("prompt v2"), &config).await;
+            check_prompt_drift(&baselines, &alerts, "openai", Some("prompt v2"), &config, true).await;
         assert!(matches!(result, GuardDecision::Deny(_)));
         if let GuardDecision::Deny(msg) = result {
             assert_eq!(msg, "System prompt drift detected. Request blocked by policy.");
         }
 
-        // Alert is still created for deny mode
         assert_eq!(alerts.list().await.len(), 1);
     }
 
@@ -789,10 +793,9 @@ mod tests {
             ..Default::default()
         };
 
-        check_prompt_drift(&baselines, &alerts, "openai", Some("prompt v1"), &config).await;
+        check_prompt_drift(&baselines, &alerts, "openai", Some("prompt v1"), &config, true).await;
         let result =
-            check_prompt_drift(&baselines, &alerts, "openai", Some("prompt v2"), &config).await;
-        // Ignore mode: allowed, no alert, just logged
+            check_prompt_drift(&baselines, &alerts, "openai", Some("prompt v2"), &config, true).await;
         assert_eq!(result, GuardDecision::Allow);
         assert!(alerts.list().await.is_empty());
     }
@@ -806,21 +809,16 @@ mod tests {
             ..Default::default()
         };
 
-        // Baseline
-        check_prompt_drift(&baselines, &alerts, "openai", Some("original"), &config).await;
+        check_prompt_drift(&baselines, &alerts, "openai", Some("original"), &config, true).await;
 
-        // Injected prompt — should alert
-        let r = check_prompt_drift(&baselines, &alerts, "openai", Some("injected"), &config).await;
+        let r = check_prompt_drift(&baselines, &alerts, "openai", Some("injected"), &config, true).await;
         assert_eq!(r, GuardDecision::AllowWithAlert);
 
-        // Same injected prompt again — should STILL alert because
-        // baseline was never overwritten
-        let r = check_prompt_drift(&baselines, &alerts, "openai", Some("injected"), &config).await;
+        let r = check_prompt_drift(&baselines, &alerts, "openai", Some("injected"), &config, true).await;
         assert_eq!(r, GuardDecision::AllowWithAlert);
         assert_eq!(alerts.list().await.len(), 2);
 
-        // Original prompt returns cleanly — no alert
-        let r = check_prompt_drift(&baselines, &alerts, "openai", Some("original"), &config).await;
+        let r = check_prompt_drift(&baselines, &alerts, "openai", Some("original"), &config, true).await;
         assert_eq!(r, GuardDecision::Allow);
         assert_eq!(alerts.list().await.len(), 2);
     }
@@ -834,14 +832,12 @@ mod tests {
             ..Default::default()
         };
 
-        check_prompt_drift(&baselines, &alerts, "openai", Some("original"), &config).await;
+        check_prompt_drift(&baselines, &alerts, "openai", Some("original"), &config, true).await;
 
-        // Injected prompt — blocked
-        let r = check_prompt_drift(&baselines, &alerts, "openai", Some("injected"), &config).await;
+        let r = check_prompt_drift(&baselines, &alerts, "openai", Some("injected"), &config, true).await;
         assert!(matches!(r, GuardDecision::Deny(_)));
 
-        // Same injection again — still blocked
-        let r = check_prompt_drift(&baselines, &alerts, "openai", Some("injected"), &config).await;
+        let r = check_prompt_drift(&baselines, &alerts, "openai", Some("injected"), &config, true).await;
         assert!(matches!(r, GuardDecision::Deny(_)));
         assert_eq!(alerts.list().await.len(), 2);
     }
@@ -855,21 +851,16 @@ mod tests {
             ..Default::default()
         };
 
-        check_prompt_drift(&baselines, &alerts, "openai", Some("original"), &config).await;
+        check_prompt_drift(&baselines, &alerts, "openai", Some("original"), &config, true).await;
 
-        // Injected prompt — allowed but logged (ignore mode creates no alerts)
-        let r = check_prompt_drift(&baselines, &alerts, "openai", Some("injected"), &config).await;
+        let r = check_prompt_drift(&baselines, &alerts, "openai", Some("injected"), &config, true).await;
         assert_eq!(r, GuardDecision::Allow);
 
-        // Same injection again — should STILL be detected as drift (not silently pass)
-        // We verify by checking that the original prompt matches cleanly
-        let r = check_prompt_drift(&baselines, &alerts, "openai", Some("original"), &config).await;
+        let r = check_prompt_drift(&baselines, &alerts, "openai", Some("original"), &config, true).await;
         assert_eq!(r, GuardDecision::Allow);
 
-        // And the injected one is still different from baseline
-        let r = check_prompt_drift(&baselines, &alerts, "openai", Some("injected"), &config).await;
-        assert_eq!(r, GuardDecision::Allow); // ignore mode always allows
-        // No alerts in ignore mode
+        let r = check_prompt_drift(&baselines, &alerts, "openai", Some("injected"), &config, true).await;
+        assert_eq!(r, GuardDecision::Allow);
         assert!(alerts.list().await.is_empty());
     }
 
@@ -879,7 +870,7 @@ mod tests {
         let alerts = Arc::new(AlertStore::new());
         let config = PromptDriftConfig::default();
 
-        let result = check_prompt_drift(&baselines, &alerts, "openai", None, &config).await;
+        let result = check_prompt_drift(&baselines, &alerts, "openai", None, &config, true).await;
         assert_eq!(result, GuardDecision::Allow);
         assert!(baselines.baselines.read().await.is_empty());
     }
@@ -894,15 +885,13 @@ mod tests {
             ..Default::default()
         };
 
-        // Original prompt
         let prompt_v1 = format!("{}unchanged_tail", "a".repeat(100));
-        check_prompt_drift(&baselines, &alerts, "openai", Some(&prompt_v1), &config).await;
+        check_prompt_drift(&baselines, &alerts, "openai", Some(&prompt_v1), &config, true).await;
 
-        // Change at char 50 (within first 500)
         let mut prompt_v2 = "b".repeat(100);
         prompt_v2.push_str("unchanged_tail");
         let result =
-            check_prompt_drift(&baselines, &alerts, "openai", Some(&prompt_v2), &config).await;
+            check_prompt_drift(&baselines, &alerts, "openai", Some(&prompt_v2), &config, true).await;
         assert_eq!(result, GuardDecision::AllowWithAlert);
     }
 
@@ -916,16 +905,13 @@ mod tests {
             ..Default::default()
         };
 
-        // Original prompt: 500 stable chars + dynamic tail
         let stable = "a".repeat(500);
         let prompt_v1 = format!("{stable}dynamic_v1");
-        check_prompt_drift(&baselines, &alerts, "openai", Some(&prompt_v1), &config).await;
+        check_prompt_drift(&baselines, &alerts, "openai", Some(&prompt_v1), &config, true).await;
 
-        // Change only after char 500
         let prompt_v2 = format!("{stable}dynamic_v2");
         let result =
-            check_prompt_drift(&baselines, &alerts, "openai", Some(&prompt_v2), &config).await;
-        // Not detected — only first 500 chars are hashed
+            check_prompt_drift(&baselines, &alerts, "openai", Some(&prompt_v2), &config, true).await;
         assert_eq!(result, GuardDecision::Allow);
         assert!(alerts.list().await.is_empty());
     }
@@ -941,11 +927,11 @@ mod tests {
         };
 
         let prompt_v1 = format!("{}tail_v1", "a".repeat(1000));
-        check_prompt_drift(&baselines, &alerts, "openai", Some(&prompt_v1), &config).await;
+        check_prompt_drift(&baselines, &alerts, "openai", Some(&prompt_v1), &config, true).await;
 
         let prompt_v2 = format!("{}tail_v2", "a".repeat(1000));
         let result =
-            check_prompt_drift(&baselines, &alerts, "openai", Some(&prompt_v2), &config).await;
+            check_prompt_drift(&baselines, &alerts, "openai", Some(&prompt_v2), &config, true).await;
         assert_eq!(result, GuardDecision::AllowWithAlert);
     }
 
@@ -965,6 +951,7 @@ mod tests {
             "openai",
             Some("hello  world"),
             &config,
+            true,
         )
         .await;
         let result = check_prompt_drift(
@@ -973,9 +960,9 @@ mod tests {
             "openai",
             Some("hello    world"),
             &config,
+            true,
         )
         .await;
-        // Normalized, these are the same — no drift
         assert_eq!(result, GuardDecision::Allow);
     }
 
@@ -995,6 +982,7 @@ mod tests {
             "openai",
             Some("hello  world"),
             &config,
+            true,
         )
         .await;
         let result = check_prompt_drift(
@@ -1003,6 +991,7 @@ mod tests {
             "openai",
             Some("hello    world"),
             &config,
+            true,
         )
         .await;
         assert_eq!(result, GuardDecision::AllowWithAlert);
@@ -1013,21 +1002,18 @@ mod tests {
         let baselines = BaselineStore::new();
         let alerts = Arc::new(AlertStore::new());
 
-        // Start with hash_chars = 0
         let config_v1 = PromptDriftConfig {
             hash_chars: 0,
             ..Default::default()
         };
-        check_prompt_drift(&baselines, &alerts, "openai", Some("hello"), &config_v1).await;
+        check_prompt_drift(&baselines, &alerts, "openai", Some("hello"), &config_v1, true).await;
 
-        // Config changes to hash_chars = 500
         let config_v2 = PromptDriftConfig {
             hash_chars: 500,
             ..Default::default()
         };
         let result =
-            check_prompt_drift(&baselines, &alerts, "openai", Some("hello"), &config_v2).await;
-        // Baseline re-captured due to config change
+            check_prompt_drift(&baselines, &alerts, "openai", Some("hello"), &config_v2, true).await;
         assert_eq!(result, GuardDecision::BaselineCaptured);
     }
 
@@ -1037,16 +1023,14 @@ mod tests {
         let alerts = Arc::new(AlertStore::new());
         let config = PromptDriftConfig::default();
 
-        check_prompt_drift(&baselines, &alerts, "openai", Some("hello"), &config).await;
+        check_prompt_drift(&baselines, &alerts, "openai", Some("hello"), &config, true).await;
         assert!(!baselines.baselines.read().await.is_empty());
 
-        // Simulate restart / hot-reload clearing
         baselines.clear().await;
         assert!(baselines.baselines.read().await.is_empty());
 
-        // Next request re-captures baseline
         let result =
-            check_prompt_drift(&baselines, &alerts, "openai", Some("hello"), &config).await;
+            check_prompt_drift(&baselines, &alerts, "openai", Some("hello"), &config, true).await;
         assert_eq!(result, GuardDecision::BaselineCaptured);
     }
 
@@ -1057,7 +1041,7 @@ mod tests {
             enabled: false,
             ..Default::default()
         };
-        let result = check_prompt_size(&alerts, "openai", 999999, &config).await;
+        let result = check_prompt_size(&alerts, "openai", 999999, &config, true).await;
         assert_eq!(result, GuardDecision::Skipped);
         assert!(alerts.list().await.is_empty());
     }
@@ -1071,8 +1055,7 @@ mod tests {
             max_prompt_chars: 0,
             action: GuardAction::Deny,
         };
-        // 160,000 chars / 4 = 40,000 tokens < 50,000 limit
-        let result = check_prompt_size(&alerts, "openai", 160_000, &config).await;
+        let result = check_prompt_size(&alerts, "openai", 160_000, &config, true).await;
         assert_eq!(result, GuardDecision::Allow);
         assert!(alerts.list().await.is_empty());
     }
@@ -1086,8 +1069,7 @@ mod tests {
             max_prompt_chars: 0,
             action: GuardAction::Deny,
         };
-        // 240,000 chars / 4 = 60,000 tokens > 50,000 limit
-        let result = check_prompt_size(&alerts, "openai", 240_000, &config).await;
+        let result = check_prompt_size(&alerts, "openai", 240_000, &config, true).await;
         assert!(matches!(result, GuardDecision::Deny(_)));
         assert_eq!(alerts.list().await.len(), 1);
     }
@@ -1101,8 +1083,7 @@ mod tests {
             max_prompt_chars: 0,
             action: GuardAction::Alert,
         };
-        // 240,000 chars / 4 = 60,000 tokens > 50,000 limit
-        let result = check_prompt_size(&alerts, "openai", 240_000, &config).await;
+        let result = check_prompt_size(&alerts, "openai", 240_000, &config, true).await;
         assert_eq!(result, GuardDecision::AllowWithAlert);
         let alert_list = alerts.list().await;
         assert_eq!(alert_list.len(), 1);
@@ -1118,28 +1099,23 @@ mod tests {
             max_prompt_chars: 200_000,
             action: GuardAction::Deny,
         };
-        // 180,000 chars < 200,000 char limit (even though 180,000/4 = 45,000 < 50,000 token limit too)
-        let result = check_prompt_size(&alerts, "openai", 180_000, &config).await;
+        let result = check_prompt_size(&alerts, "openai", 180_000, &config, true).await;
         assert_eq!(result, GuardDecision::Allow);
 
-        // 210,000 chars > 200,000 char limit
-        let result = check_prompt_size(&alerts, "openai", 210_000, &config).await;
+        let result = check_prompt_size(&alerts, "openai", 210_000, &config, true).await;
         assert!(matches!(result, GuardDecision::Deny(_)));
     }
 
     #[tokio::test]
     async fn size_guard_chars_takes_priority_over_tokens() {
         let alerts = Arc::new(AlertStore::new());
-        // Set a low token limit but high char limit
         let config = PromptSizeGuardConfig {
             enabled: true,
-            max_prompt_tokens: 1_000, // Would block at 4,000 chars if used
-            max_prompt_chars: 200_000, // But char limit takes priority
+            max_prompt_tokens: 1_000,
+            max_prompt_chars: 200_000,
             action: GuardAction::Deny,
         };
-        // 100,000 chars is way over the token equivalent (100,000/4 = 25,000 >> 1,000)
-        // but under the char limit (100,000 < 200,000), so it should pass
-        let result = check_prompt_size(&alerts, "openai", 100_000, &config).await;
+        let result = check_prompt_size(&alerts, "openai", 100_000, &config, true).await;
         assert_eq!(result, GuardDecision::Allow);
     }
 
@@ -1149,11 +1125,10 @@ mod tests {
         let config = PromptSizeGuardConfig {
             enabled: true,
             max_prompt_tokens: 100,
-            max_prompt_chars: 0, // token estimate mode
+            max_prompt_chars: 0,
             action: GuardAction::Deny,
         };
-        // 800 chars / 4 = 200 tokens > 100 limit
-        let result = check_prompt_size(&alerts, "openai", 800, &config).await;
+        let result = check_prompt_size(&alerts, "openai", 800, &config, true).await;
         if let GuardDecision::Deny(msg) = result {
             assert!(msg.contains("~"), "token mode should use ~ prefix: {msg}");
             assert!(msg.contains("tokens"), "should say tokens: {msg}");
@@ -1168,10 +1143,10 @@ mod tests {
         let config = PromptSizeGuardConfig {
             enabled: true,
             max_prompt_tokens: 50_000,
-            max_prompt_chars: 1_000, // exact char mode
+            max_prompt_chars: 1_000,
             action: GuardAction::Deny,
         };
-        let result = check_prompt_size(&alerts, "openai", 1_500, &config).await;
+        let result = check_prompt_size(&alerts, "openai", 1_500, &config, true).await;
         if let GuardDecision::Deny(msg) = result {
             assert!(!msg.contains("~"), "char mode should NOT use ~ prefix: {msg}");
             assert!(msg.contains("chars"), "should say chars: {msg}");
@@ -1188,24 +1163,20 @@ mod tests {
         let config = PromptDriftConfig::default();
         let alerts = Arc::new(AlertStore::new());
 
-        // First "run": capture a baseline with persistence
         {
             let store = BaselineStore::with_persistence(path.clone(), false);
-            check_prompt_drift(&store, &alerts, "openai", Some("hello"), &config).await;
+            check_prompt_drift(&store, &alerts, "openai", Some("hello"), &config, true).await;
             assert!(!store.is_empty().await);
         }
 
-        // File should exist
         assert!(path.exists());
 
-        // Second "run": load_existing = true (reset_baseline_on_restart = false)
         {
             let store = BaselineStore::with_persistence(path.clone(), true);
             assert!(!store.is_empty().await);
 
-            // Same prompt should match the persisted baseline — no drift
             let result =
-                check_prompt_drift(&store, &alerts, "openai", Some("hello"), &config).await;
+                check_prompt_drift(&store, &alerts, "openai", Some("hello"), &config, true).await;
             assert_eq!(result, GuardDecision::Allow);
         }
     }
@@ -1217,22 +1188,19 @@ mod tests {
         let config = PromptDriftConfig::default();
         let alerts = Arc::new(AlertStore::new());
 
-        // First "run": capture a baseline
         {
             let store = BaselineStore::with_persistence(path.clone(), false);
-            check_prompt_drift(&store, &alerts, "openai", Some("hello"), &config).await;
+            check_prompt_drift(&store, &alerts, "openai", Some("hello"), &config, true).await;
         }
 
         assert!(path.exists());
 
-        // Second "run": load_existing = false (reset_baseline_on_restart = true)
         {
             let store = BaselineStore::with_persistence(path.clone(), false);
             assert!(store.is_empty().await);
 
-            // Should re-capture baseline, not match against old one
             let result =
-                check_prompt_drift(&store, &alerts, "openai", Some("different"), &config).await;
+                check_prompt_drift(&store, &alerts, "openai", Some("different"), &config, true).await;
             assert_eq!(result, GuardDecision::BaselineCaptured);
         }
     }
@@ -1245,17 +1213,15 @@ mod tests {
         let alerts = Arc::new(AlertStore::new());
 
         let store = BaselineStore::with_persistence(path.clone(), false);
-        check_prompt_drift(&store, &alerts, "openai", Some("hello"), &config).await;
+        check_prompt_drift(&store, &alerts, "openai", Some("hello"), &config, true).await;
         assert!(path.exists());
 
         store.clear().await;
 
-        // File should be overwritten with empty object
         let content = std::fs::read_to_string(&path).unwrap();
         let map: HashMap<String, serde_json::Value> = serde_json::from_str(&content).unwrap();
         assert!(map.is_empty());
 
-        // Loading from cleared file should give empty store
         let store2 = BaselineStore::with_persistence(path.clone(), true);
         assert!(store2.is_empty().await);
     }
@@ -1285,9 +1251,8 @@ mod tests {
         let alerts = Arc::new(AlertStore::new());
         let config = PromptDriftConfig::default();
 
-        // Should work fine without any file path
         let result =
-            check_prompt_drift(&store, &alerts, "openai", Some("hello"), &config).await;
+            check_prompt_drift(&store, &alerts, "openai", Some("hello"), &config, true).await;
         assert_eq!(result, GuardDecision::BaselineCaptured);
     }
 }
