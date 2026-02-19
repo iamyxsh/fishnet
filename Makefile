@@ -1,5 +1,5 @@
 .PHONY: build build-dev build-prod run dev dev-api dev-fe dev-watch \
-       test clean install build-fe fmt check \
+       test clean install build-fe fmt check kill-port \
        docker-up docker-down docker-build docker-logs docker-clean
 
 # ── Local Development ────────────────────────────────────────────────
@@ -15,17 +15,17 @@ dev:
 	@echo "→ App on http://localhost:5173 (proxies /api → :8473)"
 	@$(MAKE) -j2 dev-api dev-fe
 
-## Run only the backend
+## Run only the backend (with dev seed data)
 dev-api:
-	cargo run --bin fishnet
+	cargo run --bin fishnet --features dev-seed
 
 ## Run only the frontend (Vite dev server, proxies /api to backend)
 dev-fe:
 	cd dashboard && npm run dev
 
-## Run backend with auto-reload on file changes
+## Run backend with auto-reload on file changes (with dev seed data)
 dev-watch:
-	cargo watch -x 'run --bin fishnet'
+	cargo watch -x 'run --bin fishnet --features dev-seed'
 
 # ── Build ────────────────────────────────────────────────────────────
 
@@ -33,9 +33,9 @@ dev-watch:
 build:
 	cargo build --release
 
-## Build the Rust backend (debug)
+## Build the Rust backend (debug, with dev seed data)
 build-dev:
-	cargo build
+	cargo build --features dev-seed
 
 ## Build single production binary with embedded dashboard
 build-prod: build-fe
@@ -62,6 +62,11 @@ fmt:
 ## Run clippy lints
 check:
 	cargo clippy -- -D warnings
+
+## Kill any process using the Fishnet port (8473)
+kill-port:
+	@lsof -ti :8473 | xargs kill 2>/dev/null || true
+	@echo "→ Port 8473 is free"
 
 ## Remove all build artifacts
 clean:

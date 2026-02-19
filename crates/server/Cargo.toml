@@ -6,6 +6,7 @@ license.workspace = true
 
 [features]
 embed-dashboard = ["dep:rust-embed", "dep:mime_guess"]
+dev-seed = []
 
 [dependencies]
 fishnet-types = { path = "../types" }
@@ -20,6 +21,10 @@ subtle.workspace = true
 chrono.workspace = true
 thiserror.workspace = true
 dirs.workspace = true
+toml.workspace = true
+notify.workspace = true
+sha3.workspace = true
+reqwest.workspace = true
 rust-embed = { workspace = true, optional = true }
 mime_guess = { workspace = true, optional = true }
 

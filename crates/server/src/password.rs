@@ -101,6 +101,12 @@ impl PasswordVerifier for FilePasswordStore {
 
         fs::write(&self.path, json)?;
 
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&self.path, fs::Permissions::from_mode(0o600))?;
+        }
+
         let mut cache = self.cache.write().unwrap();
         *cache = Some(hash);
 
