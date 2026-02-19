@@ -78,6 +78,36 @@ export interface AuthErrorResponse {
   retry_after_seconds?: number;
 }
 
+// --- Alerts ---
+export type AlertType =
+  | "prompt_drift"
+  | "prompt_size"
+  | "budget_warning"
+  | "budget_exceeded"
+  | "onchain_denied"
+  | "rate_limit_hit";
+
+export type AlertSeverity = "critical" | "warning";
+
+export interface Alert {
+  id: string;
+  type: AlertType;
+  severity: AlertSeverity;
+  service: string;
+  message: string;
+  /** Unix timestamp in seconds */
+  timestamp: number;
+  dismissed: boolean;
+}
+
+export interface AlertsResponse {
+  alerts: Alert[];
+}
+
+export interface DismissAlertResponse {
+  success: boolean;
+}
+
 // --- Generic ---
 export interface ApiError {
   error: string;

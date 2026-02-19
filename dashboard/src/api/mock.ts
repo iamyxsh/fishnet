@@ -7,6 +7,9 @@ import type {
   LoginResponse,
   SetupResponse,
   LogoutResponse,
+  Alert,
+  AlertsResponse,
+  DismissAlertResponse,
 } from "./types";
 
 const mockRecentActivity: RecentActivity[] = [
@@ -69,6 +72,56 @@ const mockRecentActivity: RecentActivity[] = [
   },
 ];
 
+const nowSecs = () => Math.floor(Date.now() / 1000);
+
+const mockAlerts: Alert[] = [
+  {
+    id: "alert_001",
+    type: "prompt_drift",
+    severity: "critical",
+    service: "openai",
+    message: "System prompt changed. Previous: 0x3a1f\u2026c8e2 Current: 0x91b4\u2026d7f0",
+    timestamp: nowSecs() - 3 * 60,
+    dismissed: false,
+  },
+  {
+    id: "alert_002",
+    type: "prompt_drift",
+    severity: "critical",
+    service: "anthropic",
+    message: "System prompt changed. Previous: 0x7e2d\u2026a1b3 Current: 0xf4c8\u202652e9",
+    timestamp: nowSecs() - 18 * 60,
+    dismissed: false,
+  },
+  {
+    id: "alert_003",
+    type: "prompt_size",
+    severity: "warning",
+    service: "openai",
+    message: "Oversized prompt: ~62,500 tokens (limit: 50,000). Action: alert only.",
+    timestamp: nowSecs() - 45 * 60,
+    dismissed: false,
+  },
+  {
+    id: "alert_004",
+    type: "prompt_size",
+    severity: "warning",
+    service: "anthropic",
+    message: "Prompt size 210,000 chars exceeds limit of 200,000. Action: denied.",
+    timestamp: nowSecs() - 2 * 3600,
+    dismissed: false,
+  },
+  {
+    id: "alert_005",
+    type: "prompt_drift",
+    severity: "critical",
+    service: "openai",
+    message: "System prompt changed. Previous: 0x3a1f\u2026c8e2 Current: 0xbb07\u202619d3",
+    timestamp: nowSecs() - 6 * 3600,
+    dismissed: true,
+  },
+];
+
 const routes: Record<string, (opts?: RequestInit) => unknown> = {
   // Auth routes — mock always returns authenticated
   "GET /auth/status": (): AuthStatusResponse => ({
@@ -102,7 +155,7 @@ const routes: Record<string, (opts?: RequestInit) => unknown> = {
       {
         id: "w1",
         level: "warning",
-        message: "OpenAI daily budget at 92.6% — $18.53 of $20.00 used",
+        message: "OpenAI daily budget at 92.6% \u2014 $18.53 of $20.00 used",
         timestamp: new Date().toISOString(),
         ongoing: true,
       },
@@ -130,9 +183,18 @@ const routes: Record<string, (opts?: RequestInit) => unknown> = {
   "GET /activity": (): RecentActivityResponse => ({
     activities: mockRecentActivity,
   }),
+
+  // Alerts routes — matches backend shape: { alerts: [...] }
+  "GET /alerts": (): AlertsResponse => ({ alerts: mockAlerts }),
+
+  // Dismiss: POST /alerts/dismiss with { id } in body
+  "POST /alerts/dismiss": (): DismissAlertResponse => ({ success: true }),
 };
 
-function matchRoute(path: string, method: string): ((opts?: RequestInit) => unknown) | undefined {
+function matchRoute(
+  path: string,
+  method: string,
+): ((opts?: RequestInit) => unknown) | undefined {
   const cleanPath = path.split("?")[0];
   const key = `${method} ${cleanPath}`;
   if (routes[key]) return routes[key];
