@@ -6,15 +6,16 @@ use fishnet_server::{
     create_router,
     llm_guard::BaselineStore,
     password::FilePasswordStore,
-    rate_limit::LoginRateLimiter,
+    rate_limit::{LoginRateLimiter, ProxyRateLimiter},
     session::SessionStore,
+    spend::SpendStore,
     state::AppState,
     watch::spawn_config_watcher,
 };
 
 #[tokio::main]
 async fn main() {
-    let explicit_config = std::env::var("FISHNET_CONFIG")
+    let explicit_config = std::env::var(fishnet_server::constants::ENV_FISHNET_CONFIG)
         .ok()
         .map(std::path::PathBuf::from);
     let config_path = resolve_config_path(explicit_config.as_deref());
@@ -37,6 +38,7 @@ async fn main() {
 
     let (config_tx, config_rx) = config_channel(config);
 
+    let config_path_for_state = config_path.clone();
     let _watcher_guard = config_path.map(|path| spawn_config_watcher(path, config_tx));
 
     let baseline_store = Arc::new(match BaselineStore::default_path() {
@@ -47,13 +49,33 @@ async fn main() {
         }
     });
 
+    let spend_store = Arc::new(match SpendStore::default_path() {
+        Some(path) => match SpendStore::open(path.clone()) {
+            Ok(store) => {
+                eprintln!("[fishnet] spend database opened at {}", path.display());
+                store
+            }
+            Err(e) => {
+                eprintln!("[fishnet] fatal: failed to open spend database: {e}");
+                std::process::exit(1);
+            }
+        },
+        None => {
+            eprintln!("[fishnet] fatal: could not determine home directory for spend database");
+            std::process::exit(1);
+        }
+    });
+
     let state = AppState {
         password_store: Arc::new(FilePasswordStore::new(FilePasswordStore::default_path())),
         session_store: Arc::new(SessionStore::new()),
         rate_limiter: Arc::new(LoginRateLimiter::new()),
+        proxy_rate_limiter: Arc::new(ProxyRateLimiter::new()),
         config_rx,
+        config_path: config_path_for_state,
         alert_store: Arc::new(AlertStore::new()),
         baseline_store: baseline_store.clone(),
+        spend_store,
         http_client: reqwest::Client::new(),
     };
 
@@ -64,8 +86,9 @@ async fn main() {
 
     let app = create_router(state);
 
-    let host = std::env::var("FISHNET_HOST").unwrap_or_else(|_| "127.0.0.1".into());
-    let addr = format!("{host}:8473");
+    let host = std::env::var(fishnet_server::constants::ENV_FISHNET_HOST)
+        .unwrap_or_else(|_| fishnet_server::constants::DEFAULT_HOST.into());
+    let addr = format!("{host}:{}", fishnet_server::constants::DEFAULT_PORT);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     eprintln!("[fishnet] listening on http://{addr}");
     axum::serve(listener, app).await.unwrap();

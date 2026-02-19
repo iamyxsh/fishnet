@@ -4,6 +4,8 @@ use chrono::{DateTime, TimeDelta, Utc};
 use subtle::ConstantTimeEq;
 use tokio::sync::RwLock;
 
+use crate::constants;
+
 pub struct Session {
     pub token: String,
     pub created_at: DateTime<Utc>,
@@ -26,15 +28,15 @@ impl SessionStore {
     pub fn new() -> Self {
         Self {
             sessions: RwLock::new(HashMap::new()),
-            ttl: TimeDelta::hours(4),
-            max_sessions: 5,
+            ttl: TimeDelta::hours(constants::SESSION_TTL_HOURS),
+            max_sessions: constants::MAX_SESSIONS,
         }
     }
 
     pub async fn create(&self) -> Session {
-        let token_bytes: [u8; 32] = rand::random();
+        let token_bytes: [u8; constants::SESSION_TOKEN_BYTES] = rand::random();
         let hex: String = token_bytes.iter().map(|b| format!("{b:02x}")).collect();
-        let token = format!("fn_sess_{hex}");
+        let token = format!("{}{hex}", constants::SESSION_TOKEN_PREFIX);
 
         let now = Utc::now();
         let expires_at = now + self.ttl;
