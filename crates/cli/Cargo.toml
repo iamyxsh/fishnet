@@ -8,7 +8,12 @@ license.workspace = true
 name = "fishnet"
 path = "src/main.rs"
 
+[features]
+dev-seed = ["fishnet-server/dev-seed"]
+
 [dependencies]
 fishnet-server = { path = "../server" }
+fishnet-types = { path = "../types" }
 tokio.workspace = true
 axum.workspace = true
+reqwest.workspace = true
