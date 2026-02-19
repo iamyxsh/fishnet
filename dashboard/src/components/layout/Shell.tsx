@@ -2,7 +2,7 @@ import { useState, useCallback } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { useFetch } from "@/hooks/use-fetch";
-import { useAlerts } from "@/hooks/use-alerts";
+import { AlertsProvider, useAlertsContext } from "@/context/alerts-context";
 import { fetchStatus } from "@/api/endpoints/status";
 import { ROUTES } from "@/lib/constants";
 
@@ -19,6 +19,14 @@ const routeSubtitles: Record<string, string> = {
 };
 
 export function Shell() {
+  return (
+    <AlertsProvider>
+      <ShellInner />
+    </AlertsProvider>
+  );
+}
+
+function ShellInner() {
   const [collapsed, setCollapsed] = useState(() => {
     if (typeof window === "undefined") return false;
     return localStorage.getItem("sidebar-collapsed") === "true";
@@ -29,7 +37,7 @@ export function Shell() {
   const subtitle = routeSubtitles[location.pathname];
 
   const { data: status } = useFetch(fetchStatus);
-  const { undismissed } = useAlerts();
+  const { undismissed } = useAlertsContext();
 
   const handleToggle = useCallback(() => {
     setCollapsed((prev) => {

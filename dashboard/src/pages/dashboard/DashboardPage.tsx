@@ -1,5 +1,5 @@
 import { useFetch } from "@/hooks/use-fetch";
-import { useAlerts } from "@/hooks/use-alerts";
+import { useAlertsContext } from "@/context/alerts-context";
 import { fetchStatus } from "@/api/endpoints/status";
 import { fetchSpend } from "@/api/endpoints/spend";
 import { fetchRecentActivity } from "@/api/endpoints/activity";
@@ -13,7 +13,7 @@ export default function DashboardPage() {
   const { data: status, loading: statusLoading } = useFetch(fetchStatus);
   const { data: spend, loading: spendLoading } = useFetch(fetchSpend);
   const { data: activity, loading: activityLoading } = useFetch(fetchRecentActivity);
-  const { latest, undismissed, dismiss } = useAlerts();
+  const { latest, undismissed, dismiss } = useAlertsContext();
 
   return (
     <div className="space-y-6">

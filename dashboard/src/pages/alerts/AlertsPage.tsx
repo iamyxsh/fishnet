@@ -3,14 +3,14 @@ import { Shield, X } from "lucide-react";
 import { Card } from "@/components/ui/Card";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { useAlerts } from "@/hooks/use-alerts";
+import { useAlertsContext } from "@/context/alerts-context";
 import { AlertRow } from "./AlertRow";
 import { AlertFilters } from "./AlertFilters";
 import type { StatusFilter } from "./AlertFilters";
 import type { AlertType, AlertSeverity } from "@/api/types";
 
 export default function AlertsPage() {
-  const { alerts, undismissed, loading, dismiss, dismissBulk } = useAlerts();
+  const { alerts, undismissed, loading, dismiss, dismissBulk } = useAlertsContext();
 
   // Filters
   const [typeFilter, setTypeFilter] = useState<AlertType | "all">("all");
