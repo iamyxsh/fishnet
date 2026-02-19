@@ -4,9 +4,11 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 
+use crate::alert::{AlertSeverity, AlertType};
 use crate::llm_guard::{
     check_prompt_drift, check_prompt_size, count_prompt_chars, extract_system_prompt, GuardDecision,
 };
+use crate::constants;
 use crate::state::AppState;
 
 pub async fn handler(
@@ -17,7 +19,7 @@ pub async fn handler(
     body: axum::body::Bytes,
 ) -> Response {
     let path = uri.path();
-    let path = path.strip_prefix("/proxy/").unwrap_or(path);
+    let path = path.strip_prefix(constants::PROXY_PATH_PREFIX).unwrap_or(path);
     let (provider, rest) = match path.split_once('/') {
         Some((p, r)) => (p.to_string(), format!("/{r}")),
         None => {
@@ -30,8 +32,8 @@ pub async fn handler(
     };
 
     let upstream_base = match provider.as_str() {
-        "openai" => "https://api.openai.com",
-        "anthropic" => "https://api.anthropic.com",
+        "openai" => constants::OPENAI_API_BASE,
+        "anthropic" => constants::ANTHROPIC_API_BASE,
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -44,6 +46,36 @@ pub async fn handler(
     };
 
     let config = state.config();
+
+    if config.llm.rate_limit_per_minute > 0 {
+        if let Err(retry_after) = state
+            .proxy_rate_limiter
+            .check_and_record(&provider, config.llm.rate_limit_per_minute)
+            .await
+        {
+            if config.alerts.rate_limit_hit {
+                state
+                    .alert_store
+                    .create(
+                        AlertType::RateLimitHit,
+                        AlertSeverity::Warning,
+                        &provider,
+                        format!(
+                            "Rate limit exceeded for {provider}. Retry after {retry_after}s."
+                        ),
+                    )
+                    .await;
+            }
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(serde_json::json!({
+                    "error": format!("rate limit exceeded, retry after {retry_after}s"),
+                    "retry_after_seconds": retry_after
+                })),
+            )
+                .into_response();
+        }
+    }
 
     let needs_guards =
         config.llm.prompt_drift.enabled || config.llm.prompt_size_guard.enabled;
@@ -80,6 +112,7 @@ pub async fn handler(
             &provider,
             system_prompt.as_deref(),
             &config.llm.prompt_drift,
+            config.alerts.prompt_drift,
         )
         .await;
 
@@ -97,6 +130,7 @@ pub async fn handler(
             &provider,
             total_chars,
             &config.llm.prompt_size_guard,
+            config.alerts.prompt_size,
         )
         .await;
 
