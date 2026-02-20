@@ -1,30 +1,30 @@
 import { useFetch } from "@/hooks/use-fetch";
-import { fetchStatus } from "@/api/endpoints/status";
+import { useAlertsContext } from "@/context/alerts-context";
 import { fetchSpend } from "@/api/endpoints/spend";
-import { fetchRecentActivity } from "@/api/endpoints/activity";
 import { SkeletonCard } from "@/components/ui/Skeleton";
 import { MetricCards } from "./MetricCards";
-import { WarningBanners } from "./WarningBanners";
+import { AlertBanner } from "./AlertBanner";
 import { SpendByService } from "./SpendByService";
-import { RecentActivityTable } from "./RecentActivityTable";
 
 export default function DashboardPage() {
-  const { data: status, loading: statusLoading } = useFetch(fetchStatus);
   const { data: spend, loading: spendLoading } = useFetch(fetchSpend);
-  const { data: activity, loading: activityLoading } = useFetch(fetchRecentActivity);
+  const { latest, undismissed, dismiss } = useAlertsContext();
 
   return (
     <div className="space-y-6">
-      {/* Monitoring subtitle with subtle code styling */}
-      <p className="text-sm text-text-secondary">
-        Monitoring proxy activity on{" "}
-        <code className="rounded-md bg-bg-tertiary/50 px-1.5 py-0.5 font-mono text-xs text-text">
-          localhost:8472
-        </code>
-      </p>
+      {/* Monitoring status bar */}
+      <div className="flex items-center gap-2 text-sm text-text-secondary">
+        <span className="status-pulse inline-block h-2 w-2 rounded-full bg-success" />
+        <span>
+          Monitoring proxy on{" "}
+          <code className="rounded-md bg-bg-tertiary/60 px-1.5 py-0.5 font-mono text-xs text-text">
+            localhost:8472
+          </code>
+        </span>
+      </div>
 
       {/* Metric cards row */}
-      {statusLoading || !status ? (
+      {spendLoading || !spend ? (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
           <SkeletonCard />
           <SkeletonCard />
@@ -32,28 +32,24 @@ export default function DashboardPage() {
           <SkeletonCard />
         </div>
       ) : (
-        <MetricCards status={status} spend={spend} />
+        <MetricCards spend={spend} activeAlerts={undismissed.length} />
       )}
 
-      {/* Warning banners */}
-      {status && status.warnings.length > 0 && (
-        <WarningBanners warnings={status.warnings} />
+      {/* Latest alert banner */}
+      {latest && (
+        <AlertBanner
+          alert={latest}
+          totalActive={undismissed.length}
+          onDismiss={dismiss}
+        />
       )}
 
-      {/* Two-column: Spend by Service + Recent Activity */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        {spendLoading || !spend ? (
-          <SkeletonCard />
-        ) : (
-          <SpendByService spend={spend} />
-        )}
-
-        {activityLoading || !activity ? (
-          <SkeletonCard />
-        ) : (
-          <RecentActivityTable activities={activity.activities} />
-        )}
-      </div>
+      {/* Spend by Service */}
+      {spendLoading || !spend ? (
+        <SkeletonCard />
+      ) : (
+        <SpendByService spend={spend} />
+      )}
     </div>
   );
 }
