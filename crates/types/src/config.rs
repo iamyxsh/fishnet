@@ -1,21 +1,14 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FishnetConfig {
     pub llm: LlmConfig,
     pub dashboard: DashboardConfig,
     pub alerts: AlertsConfig,
-}
-
-impl Default for FishnetConfig {
-    fn default() -> Self {
-        Self {
-            llm: LlmConfig::default(),
-            dashboard: DashboardConfig::default(),
-            alerts: AlertsConfig::default(),
-        }
-    }
+    pub onchain: OnchainConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,6 +115,56 @@ impl Default for AlertsConfig {
             onchain_denied: true,
             rate_limit_hit: true,
             retention_days: 30,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OnchainConfig {
+    pub enabled: bool,
+    pub chain_ids: Vec<u64>,
+    pub limits: OnchainLimits,
+    pub permits: OnchainPermits,
+    pub whitelist: HashMap<String, Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OnchainLimits {
+    pub max_tx_value_usd: f64,
+    pub daily_spend_cap_usd: f64,
+    pub cooldown_seconds: u64,
+    pub max_slippage_bps: u64,
+    pub max_leverage: u64,
+}
+
+impl Default for OnchainLimits {
+    fn default() -> Self {
+        Self {
+            max_tx_value_usd: 100.0,
+            daily_spend_cap_usd: 500.0,
+            cooldown_seconds: 30,
+            max_slippage_bps: 50,
+            max_leverage: 5,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OnchainPermits {
+    pub expiry_seconds: u64,
+    pub require_policy_hash: bool,
+    pub verifying_contract: String,
+}
+
+impl Default for OnchainPermits {
+    fn default() -> Self {
+        Self {
+            expiry_seconds: 300,
+            require_policy_hash: true,
+            verifying_contract: String::new(),
         }
     }
 }

@@ -4,6 +4,7 @@ pub const ANTHROPIC_API_BASE: &str = "https://api.anthropic.com";
 pub const FISHNET_DIR: &str = ".fishnet";
 pub const AUTH_FILE: &str = "auth.json";
 pub const SPEND_DB_FILE: &str = "fishnet.db";
+pub const ALERTS_DB_FILE: &str = "alerts.db";
 pub const BASELINES_FILE: &str = "baselines.json";
 pub const CONFIG_FILE: &str = "fishnet.toml";
 pub const CONFIG_TEMP_EXT: &str = "toml.tmp";

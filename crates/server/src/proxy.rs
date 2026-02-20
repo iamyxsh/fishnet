@@ -47,34 +47,36 @@ pub async fn handler(
 
     let config = state.config();
 
-    if config.llm.rate_limit_per_minute > 0 {
-        if let Err(retry_after) = state
+    if config.llm.rate_limit_per_minute > 0
+        && let Err(retry_after) = state
             .proxy_rate_limiter
             .check_and_record(&provider, config.llm.rate_limit_per_minute)
             .await
-        {
-            if config.alerts.rate_limit_hit {
-                state
-                    .alert_store
-                    .create(
-                        AlertType::RateLimitHit,
-                        AlertSeverity::Warning,
-                        &provider,
-                        format!(
-                            "Rate limit exceeded for {provider}. Retry after {retry_after}s."
-                        ),
-                    )
-                    .await;
+    {
+        if config.alerts.rate_limit_hit {
+            if let Err(e) = state
+                .alert_store
+                .create(
+                    AlertType::RateLimitHit,
+                    AlertSeverity::Warning,
+                    &provider,
+                    format!(
+                        "Rate limit exceeded for {provider}. Retry after {retry_after}s."
+                    ),
+                )
+                .await
+            {
+                eprintln!("[fishnet] failed to create rate limit alert: {e}");
             }
-            return (
-                StatusCode::TOO_MANY_REQUESTS,
-                Json(serde_json::json!({
-                    "error": format!("rate limit exceeded, retry after {retry_after}s"),
-                    "retry_after_seconds": retry_after
-                })),
-            )
-                .into_response();
         }
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({
+                "error": format!("rate limit exceeded, retry after {retry_after}s"),
+                "retry_after_seconds": retry_after
+            })),
+        )
+            .into_response();
     }
 
     let needs_guards =
@@ -83,7 +85,7 @@ pub async fn handler(
     let is_json_body = headers
         .get("content-type")
         .and_then(|v| v.to_str().ok())
-        .map_or(false, |ct| ct.contains("application/json"));
+        .is_some_and(|ct| ct.contains("application/json"));
 
     let body_json: Option<serde_json::Value> =
         if needs_guards && !body.is_empty() && is_json_body {

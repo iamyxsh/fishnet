@@ -6,9 +6,11 @@ use tokio::sync::watch;
 
 use crate::alert::AlertStore;
 use crate::llm_guard::BaselineStore;
+use crate::onchain::OnchainStore;
 use crate::password::PasswordVerifier;
 use crate::rate_limit::{LoginRateLimiter, ProxyRateLimiter};
 use crate::session::SessionStore;
+use crate::signer::SignerTrait;
 use crate::spend::SpendStore;
 
 #[derive(Clone)]
@@ -23,6 +25,8 @@ pub struct AppState {
     pub baseline_store: Arc<BaselineStore>,
     pub spend_store: Arc<SpendStore>,
     pub http_client: reqwest::Client,
+    pub onchain_store: Arc<OnchainStore>,
+    pub signer: Arc<dyn SignerTrait>,
 }
 
 impl AppState {
