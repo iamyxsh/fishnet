@@ -26,6 +26,10 @@ pub enum ConfigError {
     },
 }
 
+pub fn default_config_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(constants::FISHNET_DIR).join(constants::CONFIG_FILE))
+}
+
 pub fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
     if let Some(path) = explicit {
         return Some(path.to_path_buf());
