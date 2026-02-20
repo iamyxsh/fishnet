@@ -25,38 +25,42 @@ export function MetricCards({ spend, activeAlerts }: MetricCardsProps) {
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
       {/* Total Requests */}
-      <StatCard
-        label="Total Requests"
-        value={totalRequests.toLocaleString()}
-        icon={<Zap size={18} />}
-        accentColor="bg-brand"
-      />
+      <div className="animate-fade-in-up h-full" style={{ animationDelay: "0ms" }}>
+        <StatCard
+          label="Total Requests"
+          value={totalRequests.toLocaleString()}
+          icon={<Zap size={18} />}
+          accentColor="bg-brand"
+        />
+      </div>
 
       {/* Today's Spend */}
-      <Link to={ROUTES.SPEND} className="block">
+      <Link to={ROUTES.SPEND} className="animate-fade-in-up block h-full" style={{ animationDelay: "80ms" }}>
         <StatCard
           label="Today's Spend"
           value={formatDollars(totalSpent)}
           icon={<DollarSign size={18} />}
-          accentColor="bg-brand"
+          accentColor="bg-success"
           progress={{
             value: spendPct,
-            color: spendPct > 90 ? "bg-danger" : spendPct > 70 ? "bg-warning" : "bg-brand",
+            color: spendPct > 90 ? "bg-danger" : spendPct > 70 ? "bg-warning" : "bg-success",
           }}
           subtitle={totalLimit > 0 ? `${formatDollars(totalLimit)} limit` : "No limits set"}
         />
       </Link>
 
       {/* Active Services */}
-      <StatCard
-        label="Active Services"
-        value={activeServices}
-        icon={<Activity size={18} />}
-        accentColor="bg-brand"
-      />
+      <div className="animate-fade-in-up h-full" style={{ animationDelay: "160ms" }}>
+        <StatCard
+          label="Active Services"
+          value={activeServices}
+          icon={<Activity size={18} />}
+          accentColor="bg-info"
+        />
+      </div>
 
       {/* Active Alerts — links to /alerts */}
-      <Link to={ROUTES.ALERTS} className="block">
+      <Link to={ROUTES.ALERTS} className="animate-fade-in-up block h-full" style={{ animationDelay: "240ms" }}>
         <StatCard
           label="Active Alerts"
           value={activeAlerts}
@@ -70,7 +74,7 @@ export function MetricCards({ spend, activeAlerts }: MetricCardsProps) {
               <span className="text-success">All clear</span>
             )
           }
-          accentColor={activeAlerts > 0 ? "bg-warning" : "bg-brand"}
+          accentColor={activeAlerts > 0 ? "bg-warning" : "bg-success"}
         />
       </Link>
     </div>

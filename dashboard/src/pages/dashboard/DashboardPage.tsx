@@ -12,13 +12,16 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      {/* Monitoring subtitle with subtle code styling */}
-      <p className="text-sm text-text-secondary">
-        Monitoring proxy activity on{" "}
-        <code className="rounded-md bg-bg-tertiary/50 px-1.5 py-0.5 font-mono text-xs text-text">
-          localhost:8472
-        </code>
-      </p>
+      {/* Monitoring status bar */}
+      <div className="flex items-center gap-2 text-sm text-text-secondary">
+        <span className="status-pulse inline-block h-2 w-2 rounded-full bg-success" />
+        <span>
+          Monitoring proxy on{" "}
+          <code className="rounded-md bg-bg-tertiary/60 px-1.5 py-0.5 font-mono text-xs text-text">
+            localhost:8472
+          </code>
+        </span>
+      </div>
 
       {/* Metric cards row */}
       {spendLoading || !spend ? (

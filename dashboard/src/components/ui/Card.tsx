@@ -28,9 +28,11 @@ export function Card({
       )}
     >
       {(title || action) && (
-        <div className="flex items-center justify-between border-b border-border px-6 py-4">
+        <div className="flex items-center justify-between border-b border-border-subtle px-6 py-4">
           {title && (
-            <h3 className="text-sm font-semibold text-text">{title}</h3>
+            <h3 className="text-[13px] font-semibold tracking-wide text-text">
+              {title}
+            </h3>
           )}
           {action && <div className="ml-auto">{action}</div>}
         </div>

@@ -148,7 +148,7 @@ body {
   border-color: #3a3a3f;
 }
 
-/* ── Stat card hover (border-based, no shadows in dark mode) ── */
+/* ── Stat card hover (kept for backward compat, cards now use inline Tailwind) ── */
 .stat-card-glow {
   transition: transform 200ms cubic-bezier(0.33, 1, 0.68, 1),
               border-color 200ms ease;
