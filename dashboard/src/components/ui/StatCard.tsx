@@ -16,6 +16,15 @@ interface StatCardProps {
   className?: string;
 }
 
+const ICON_STYLES: Record<string, string> = {
+  "bg-success": "bg-success-dim text-success",
+  "bg-danger": "bg-danger-dim text-danger",
+  "bg-brand": "bg-brand-muted text-brand",
+  "bg-info": "bg-info-dim text-info",
+  "bg-warning": "bg-warning-dim text-warning",
+  "bg-purple": "bg-purple-dim text-purple",
+};
+
 export function StatCard({
   label,
   value,
@@ -29,7 +38,7 @@ export function StatCard({
   return (
     <div
       className={cn(
-        "stat-card-glow group relative overflow-hidden rounded-xl border border-border bg-surface p-5",
+        "stat-card-glow group relative h-full overflow-hidden rounded-xl border border-border bg-surface p-5",
         className,
       )}
     >
@@ -55,7 +64,7 @@ export function StatCard({
             className={cn(
               "flex h-9 w-9 items-center justify-center rounded-lg transition-all duration-200",
               accentColor
-                ? "bg-brand-muted text-brand group-hover:bg-brand/15 group-hover:shadow-[0_0_12px_rgba(230,57,70,0.12)]"
+                ? ICON_STYLES[accentColor] ?? "bg-brand-muted text-brand"
                 : "bg-bg-tertiary text-text-secondary",
             )}
           >

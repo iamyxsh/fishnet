@@ -4,13 +4,26 @@ export const ROUTES = {
   LOGIN: "/login",
   ALERTS: "/alerts",
   SPEND: "/spend",
+  ONCHAIN: "/onchain",
 } as const;
 
 export const POLLING_INTERVALS = {
   STATUS: 5_000,
   ALERTS: 30_000,
   SPEND: 60_000,
+  ONCHAIN: 10_000,
 } as const;
+
+/** Human-readable chain names for common EVM chain IDs */
+export const CHAIN_LABELS: Record<number, string> = {
+  1: "Ethereum",
+  8453: "Base",
+  42161: "Arbitrum",
+  137: "Polygon",
+  10: "Optimism",
+  56: "BSC",
+  43114: "Avalanche",
+};
 
 /** Hex colors for recharts chart fills (mirrors CSS service color vars) */
 export const SERVICE_CHART_COLORS: Record<string, string> = {
