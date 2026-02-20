@@ -1,17 +1,21 @@
+import { Link } from "react-router-dom";
 import { StatCard } from "@/components/ui/StatCard";
-import { Zap, DollarSign, Activity, ShieldAlert } from "lucide-react";
-import { formatCurrency } from "@/lib/format";
-import type { StatusResponse, SpendResponse } from "@/api/types";
+import { Zap, DollarSign, Activity, AlertTriangle } from "lucide-react";
+import { formatDollars } from "@/lib/format";
+import { ROUTES } from "@/lib/constants";
+import type { StatusResponse, SpendAnalyticsResponse } from "@/api/types";
 
 interface MetricCardsProps {
   status: StatusResponse;
-  spend: SpendResponse | null;
+  spend: SpendAnalyticsResponse | null;
+  activeAlerts: number;
 }
 
-export function MetricCards({ status, spend }: MetricCardsProps) {
-  const totalSpent = spend?.total_spent_cents ?? 0;
-  const totalBudget = spend?.total_budget_cents ?? 0;
-  const spendPct = totalBudget > 0 ? (totalSpent / totalBudget) * 100 : 0;
+export function MetricCards({ status, spend, activeAlerts }: MetricCardsProps) {
+  const budgets = spend?.budgets ?? {};
+  const totalSpent = Object.values(budgets).reduce((s, b) => s + b.spent_today, 0);
+  const totalLimit = Object.values(budgets).reduce((s, b) => s + (b.daily_limit ?? 0), 0);
+  const spendPct = totalLimit > 0 ? (totalSpent / totalLimit) * 100 : 0;
 
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
@@ -25,17 +29,19 @@ export function MetricCards({ status, spend }: MetricCardsProps) {
       />
 
       {/* Today's Spend */}
-      <StatCard
-        label="Today's Spend"
-        value={formatCurrency(totalSpent)}
-        icon={<DollarSign size={18} />}
-        accentColor="bg-brand"
-        progress={{
-          value: spendPct,
-          color: spendPct > 90 ? "bg-danger" : spendPct > 70 ? "bg-warning" : "bg-brand",
-        }}
-        subtitle={`${formatCurrency(totalBudget)} limit`}
-      />
+      <Link to={ROUTES.SPEND} className="block">
+        <StatCard
+          label="Today's Spend"
+          value={formatDollars(totalSpent)}
+          icon={<DollarSign size={18} />}
+          accentColor="bg-brand"
+          progress={{
+            value: spendPct,
+            color: spendPct > 90 ? "bg-danger" : spendPct > 70 ? "bg-warning" : "bg-brand",
+          }}
+          subtitle={totalLimit > 0 ? `${formatDollars(totalLimit)} limit` : "No limits set"}
+        />
+      </Link>
 
       {/* Active Services */}
       <StatCard
@@ -50,18 +56,24 @@ export function MetricCards({ status, spend }: MetricCardsProps) {
         accentColor="bg-brand"
       />
 
-      {/* Denied Requests */}
-      <StatCard
-        label="Denied Requests"
-        value={status.blocked_requests_24h}
-        icon={<ShieldAlert size={18} />}
-        trend={
-          status.blocked_requests_24h > 0 ? (
-            <span className="text-danger">↘ +{status.blocked_requests_24h} today</span>
-          ) : undefined
-        }
-        accentColor="bg-brand"
-      />
+      {/* Active Alerts — links to /alerts */}
+      <Link to={ROUTES.ALERTS} className="block">
+        <StatCard
+          label="Active Alerts"
+          value={activeAlerts}
+          icon={<AlertTriangle size={18} />}
+          trend={
+            activeAlerts > 0 ? (
+              <span className="text-warning">
+                {activeAlerts} warning{activeAlerts !== 1 ? "s" : ""}
+              </span>
+            ) : (
+              <span className="text-success">All clear</span>
+            )
+          }
+          accentColor={activeAlerts > 0 ? "bg-warning" : "bg-brand"}
+        />
+      </Link>
     </div>
   );
 }
