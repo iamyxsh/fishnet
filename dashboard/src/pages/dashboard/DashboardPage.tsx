@@ -1,18 +1,13 @@
 import { useFetch } from "@/hooks/use-fetch";
 import { useAlertsContext } from "@/context/alerts-context";
-import { fetchStatus } from "@/api/endpoints/status";
 import { fetchSpend } from "@/api/endpoints/spend";
-import { fetchRecentActivity } from "@/api/endpoints/activity";
 import { SkeletonCard } from "@/components/ui/Skeleton";
 import { MetricCards } from "./MetricCards";
 import { AlertBanner } from "./AlertBanner";
 import { SpendByService } from "./SpendByService";
-import { RecentActivityTable } from "./RecentActivityTable";
 
 export default function DashboardPage() {
-  const { data: status, loading: statusLoading } = useFetch(fetchStatus);
   const { data: spend, loading: spendLoading } = useFetch(fetchSpend);
-  const { data: activity, loading: activityLoading } = useFetch(fetchRecentActivity);
   const { latest, undismissed, dismiss } = useAlertsContext();
 
   return (
@@ -26,7 +21,7 @@ export default function DashboardPage() {
       </p>
 
       {/* Metric cards row */}
-      {statusLoading || !status ? (
+      {spendLoading || !spend ? (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
           <SkeletonCard />
           <SkeletonCard />
@@ -34,11 +29,7 @@ export default function DashboardPage() {
           <SkeletonCard />
         </div>
       ) : (
-        <MetricCards
-          status={status}
-          spend={spend}
-          activeAlerts={undismissed.length}
-        />
+        <MetricCards spend={spend} activeAlerts={undismissed.length} />
       )}
 
       {/* Latest alert banner */}
@@ -50,20 +41,12 @@ export default function DashboardPage() {
         />
       )}
 
-      {/* Two-column: Spend by Service + Recent Activity */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        {spendLoading || !spend ? (
-          <SkeletonCard />
-        ) : (
-          <SpendByService spend={spend} />
-        )}
-
-        {activityLoading || !activity ? (
-          <SkeletonCard />
-        ) : (
-          <RecentActivityTable activities={activity.activities} />
-        )}
-      </div>
+      {/* Spend by Service */}
+      {spendLoading || !spend ? (
+        <SkeletonCard />
+      ) : (
+        <SpendByService spend={spend} />
+      )}
     </div>
   );
 }

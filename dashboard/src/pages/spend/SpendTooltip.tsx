@@ -23,8 +23,8 @@ export function SpendTooltip({ active, payload, label }: SpendTooltipProps) {
   );
 
   return (
-    <div className="rounded-lg border border-border bg-surface p-3 shadow-lg">
-      <p className="mb-2 text-xs font-medium text-text">{dateLabel}</p>
+    <div className="rounded-lg border border-border bg-surface/95 p-3 shadow-lg backdrop-blur-sm">
+      <p className="mb-2 border-b border-border-subtle pb-2 text-xs font-medium text-text">{dateLabel}</p>
       <div className="space-y-1">
         {payload.map((entry: Payload<number, string>) => (
           <div
@@ -47,7 +47,7 @@ export function SpendTooltip({ active, payload, label }: SpendTooltipProps) {
       </div>
       <div className="mt-2 flex justify-between border-t border-border-subtle pt-2">
         <span className="text-xs font-medium text-text-secondary">Total</span>
-        <span className="font-mono text-xs font-bold text-text">
+        <span className="font-mono text-[13px] font-bold text-text">
           ${total.toFixed(2)}
         </span>
       </div>

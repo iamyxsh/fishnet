@@ -48,11 +48,14 @@ export function SpendBarChart({ daily, services, days }: SpendBarChartProps) {
   const tickInterval = days <= 7 ? 0 : days <= 14 ? 1 : 4;
 
   const legend = (
-    <div className="flex items-center gap-4">
+    <div className="flex items-center gap-2">
       {services.map((svc) => (
-        <div key={svc} className="flex items-center gap-1.5">
+        <div
+          key={svc}
+          className="flex items-center gap-1.5 rounded-full bg-bg-tertiary/50 px-2.5 py-1"
+        >
           <ServiceDot service={svc} />
-          <span className="text-[11px] text-text-tertiary">
+          <span className="text-[11px] text-text-secondary">
             {SERVICE_LABELS[svc as keyof typeof SERVICE_LABELS] ?? svc}
           </span>
         </div>
@@ -61,7 +64,7 @@ export function SpendBarChart({ daily, services, days }: SpendBarChartProps) {
   );
 
   return (
-    <Card title="Daily Spend" action={legend} hover={false}>
+    <Card title="Daily Spend" action={legend} className="overflow-hidden">
       <div className="h-72">
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={chartData} barCategoryGap="20%">

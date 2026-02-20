@@ -14,7 +14,7 @@ const PERIODS: { value: SpendDays; label: string }[] = [
 
 export function PeriodSelector({ days, onChange }: PeriodSelectorProps) {
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-1 rounded-full border border-border-subtle bg-bg-secondary/80 p-1">
       {PERIODS.map((p) => (
         <FilterPill
           key={p.value}

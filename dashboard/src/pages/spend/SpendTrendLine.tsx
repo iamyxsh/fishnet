@@ -10,6 +10,7 @@ import {
   CartesianGrid,
 } from "recharts";
 import { Card } from "@/components/ui/Card";
+import { cn } from "@/lib/cn";
 import type { DailySpendEntry } from "@/api/types";
 import type { SpendDays } from "@/api/endpoints/spend-analytics";
 import type { Payload } from "recharts/types/component/DefaultTooltipContent";
@@ -77,26 +78,30 @@ export function SpendTrendLine({ daily, days }: SpendTrendLineProps) {
   };
 
   const legend = (
-    <div className="flex items-center gap-4">
-      <div className="flex items-center gap-1.5">
-        <span className="h-0.5 w-3.5 rounded-full bg-brand" />
-        <span className="text-[11px] text-text-tertiary">Actual</span>
+    <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1.5 rounded-full bg-bg-tertiary/50 px-2.5 py-1">
+        <svg width="14" height="2" className="shrink-0">
+          <line x1="0" y1="1" x2="14" y2="1" stroke="var(--color-brand)" strokeWidth="2" />
+        </svg>
+        <span className="text-[11px] text-text-secondary">Actual</span>
       </div>
-      <div className="flex items-center gap-1.5">
-        <span className="h-0.5 w-3.5 rounded-full border-t border-dashed border-brand" />
-        <span className="text-[11px] text-text-tertiary">Projected</span>
+      <div className="flex items-center gap-1.5 rounded-full bg-bg-tertiary/50 px-2.5 py-1">
+        <svg width="14" height="2" className="shrink-0">
+          <line x1="0" y1="1" x2="14" y2="1" stroke="var(--color-brand)" strokeWidth="1.5" strokeDasharray="3 2" />
+        </svg>
+        <span className="text-[11px] text-text-secondary">Projected</span>
       </div>
     </div>
   );
 
   return (
-    <Card title="Cumulative Spend" action={legend} hover={false}>
+    <Card title="Cumulative Spend" action={legend} className="overflow-hidden">
       <div className="h-56">
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={chartData}>
             <defs>
               <linearGradient id="cumulativeFill" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="var(--color-brand)" stopOpacity={0.12} />
+                <stop offset="0%" stopColor="var(--color-brand)" stopOpacity={0.15} />
                 <stop offset="100%" stopColor="var(--color-brand)" stopOpacity={0} />
               </linearGradient>
             </defs>
@@ -168,25 +173,37 @@ function TrendTooltip({ active, payload, label }: TrendTooltipProps) {
   });
 
   return (
-    <div className="rounded-lg border border-border bg-surface p-3 shadow-lg">
-      <p className="mb-1.5 text-xs font-medium text-text">{dateLabel}</p>
-      {payload.map((p: Payload<number, string>) => {
-        if (p.value == null) return null;
-        const isProjected = p.dataKey === "projected";
-        return (
-          <div
-            key={String(p.dataKey)}
-            className="flex items-center justify-between gap-6"
-          >
-            <span className="text-xs text-text-secondary">
-              {isProjected ? "Projected" : "Cumulative"}
-            </span>
-            <span className="font-mono text-xs font-semibold text-text">
-              ${Number(p.value).toFixed(2)}
-            </span>
-          </div>
-        );
-      })}
+    <div className="rounded-lg border border-border bg-surface/95 p-3 shadow-lg backdrop-blur-sm">
+      <p className="mb-2 border-b border-border-subtle pb-2 text-xs font-medium text-text">{dateLabel}</p>
+      <div className="space-y-1">
+        {payload.map((p: Payload<number, string>) => {
+          if (p.value == null) return null;
+          const isProjected = p.dataKey === "projected";
+          return (
+            <div
+              key={String(p.dataKey)}
+              className="flex items-center justify-between gap-6"
+            >
+              <div className="flex items-center gap-2">
+                <span
+                  className={cn(
+                    "h-2 w-2 shrink-0 rounded-full",
+                    isProjected
+                      ? "border border-dashed border-brand"
+                      : "bg-brand",
+                  )}
+                />
+                <span className="text-xs text-text-secondary">
+                  {isProjected ? "Projected" : "Cumulative"}
+                </span>
+              </div>
+              <span className="font-mono text-xs font-semibold text-text">
+                ${Number(p.value).toFixed(2)}
+              </span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

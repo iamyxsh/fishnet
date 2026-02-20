@@ -16,12 +16,10 @@ import {
   LogOut,
   Shield,
 } from "lucide-react";
-import type { ProxyStatus } from "@/api/types";
-
 interface SidebarProps {
   collapsed: boolean;
   onToggle: () => void;
-  proxyStatus?: ProxyStatus;
+  proxyStatus?: "running" | "stopped" | "error";
   version?: string;
   alertCount?: number;
 }

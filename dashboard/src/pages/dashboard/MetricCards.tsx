@@ -3,28 +3,32 @@ import { StatCard } from "@/components/ui/StatCard";
 import { Zap, DollarSign, Activity, AlertTriangle } from "lucide-react";
 import { formatDollars } from "@/lib/format";
 import { ROUTES } from "@/lib/constants";
-import type { StatusResponse, SpendAnalyticsResponse } from "@/api/types";
+import type { SpendAnalyticsResponse } from "@/api/types";
 
 interface MetricCardsProps {
-  status: StatusResponse;
-  spend: SpendAnalyticsResponse | null;
+  spend: SpendAnalyticsResponse;
   activeAlerts: number;
 }
 
-export function MetricCards({ status, spend, activeAlerts }: MetricCardsProps) {
-  const budgets = spend?.budgets ?? {};
+export function MetricCards({ spend, activeAlerts }: MetricCardsProps) {
+  const budgets = spend.budgets ?? {};
   const totalSpent = Object.values(budgets).reduce((s, b) => s + b.spent_today, 0);
   const totalLimit = Object.values(budgets).reduce((s, b) => s + (b.daily_limit ?? 0), 0);
   const spendPct = totalLimit > 0 ? (totalSpent / totalLimit) * 100 : 0;
+
+  // Derive request count from spend daily data
+  const totalRequests = spend.daily.reduce((s, d) => s + d.request_count, 0);
+
+  // Derive active service count from budgets
+  const activeServices = Object.keys(budgets).length;
 
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
       {/* Total Requests */}
       <StatCard
         label="Total Requests"
-        value={status.total_requests_24h.toLocaleString()}
+        value={totalRequests.toLocaleString()}
         icon={<Zap size={18} />}
-        trend={<span>↗ +12.3%</span>}
         accentColor="bg-brand"
       />
 
@@ -46,13 +50,8 @@ export function MetricCards({ status, spend, activeAlerts }: MetricCardsProps) {
       {/* Active Services */}
       <StatCard
         label="Active Services"
-        value={status.active_credentials}
+        value={activeServices}
         icon={<Activity size={18} />}
-        trend={
-          <span className="flex items-center gap-1 text-success">
-            ↗ All healthy
-          </span>
-        }
         accentColor="bg-brand"
       />
 
