@@ -20,16 +20,16 @@ pub fn spawn_config_watcher(
         .to_os_string();
 
     let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
-        if let Ok(event) = res {
-            if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
-                let dominated = event.paths.is_empty()
-                    || event
-                        .paths
-                        .iter()
-                        .any(|p| p.file_name() == Some(&file_name));
-                if dominated {
-                    let _ = event_tx.try_send(());
-                }
+        if let Ok(event) = res
+            && matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_))
+        {
+            let dominated = event.paths.is_empty()
+                || event
+                    .paths
+                    .iter()
+                    .any(|p| p.file_name() == Some(&file_name));
+            if dominated {
+                let _ = event_tx.try_send(());
             }
         }
     })

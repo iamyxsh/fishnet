@@ -43,18 +43,16 @@ impl SessionStore {
 
         let mut sessions = self.sessions.write().await;
 
-        // Remove expired sessions
         sessions.retain(|_, s| s.expires_at > now);
 
-        // Evict oldest if at max
-        if sessions.len() >= self.max_sessions {
-            if let Some(oldest_key) = sessions
+
+        if sessions.len() >= self.max_sessions
+            && let Some(oldest_key) = sessions
                 .iter()
                 .min_by_key(|(_, s)| s.created_at)
                 .map(|(k, _)| k.clone())
-            {
-                sessions.remove(&oldest_key);
-            }
+        {
+            sessions.remove(&oldest_key);
         }
 
         sessions.insert(

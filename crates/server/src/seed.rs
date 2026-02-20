@@ -1,12 +1,56 @@
+use std::collections::HashMap;
+
+use fishnet_types::config::FishnetConfig;
+
 use crate::alert::{AlertSeverity, AlertStore, AlertType};
+use crate::signer::StubSigner;
 use crate::spend::{ServiceBudget, SpendStore};
 use crate::state::AppState;
+
+const DEV_PRIVATE_KEY: &str =
+    "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+
+pub fn dev_config() -> FishnetConfig {
+    let mut config = FishnetConfig::default();
+
+    config.onchain.enabled = true;
+    config.onchain.chain_ids = vec![31337];
+    config.onchain.limits.cooldown_seconds = 0;
+    config.onchain.permits.verifying_contract =
+        "0x5FbDB2315678afecb367f032d93F642f64180aa3".to_string();
+    config.onchain.permits.expiry_seconds = 300;
+    config.onchain.permits.require_policy_hash = true;
+    config.onchain.whitelist = HashMap::from([(
+        "0x5FbDB2315678afecb367f032d93F642f64180aa3".to_string(),
+        vec!["execute(bytes,bytes[],uint256)".to_string()],
+    )]);
+
+    config.llm.prompt_drift.enabled = true;
+    config.llm.prompt_size_guard.enabled = true;
+    config.llm.track_spend = true;
+
+    config.alerts.prompt_drift = true;
+    config.alerts.prompt_size = true;
+    config.alerts.budget_warning = true;
+    config.alerts.budget_exceeded = true;
+    config.alerts.onchain_denied = true;
+    config.alerts.rate_limit_hit = true;
+
+    config
+}
+
+pub fn dev_signer() -> StubSigner {
+    let pk_bytes = hex::decode(DEV_PRIVATE_KEY).expect("valid hex");
+    let mut secret = [0u8; 32];
+    secret.copy_from_slice(&pk_bytes);
+    StubSigner::from_bytes(secret)
+}
 
 pub async fn run(state: &AppState) {
     eprintln!("[fishnet] dev-seed: populating sample data");
     seed_alerts(&state.alert_store).await;
-    seed_spend(&state.spend_store);
-    seed_budgets(&state.spend_store);
+    seed_spend(&state.spend_store).await;
+    seed_budgets(&state.spend_store).await;
 }
 
 async fn seed_alerts(store: &AlertStore) {
@@ -86,19 +130,22 @@ async fn seed_alerts(store: &AlertStore) {
     ];
 
     for (alert_type, severity, service, message) in alerts {
-        store
+        if let Err(e) = store
             .create(*alert_type, *severity, service, message.to_string())
-            .await;
+            .await
+        {
+            eprintln!("[fishnet] dev-seed: failed to create alert: {e}");
+        }
     }
 
-    if let Some(alert) = store.list().await.first() {
-        store.dismiss(&alert.id).await;
+    if let Some(alert) = store.list().await.unwrap_or_default().first() {
+        let _ = store.dismiss(&alert.id).await;
     }
 
     eprintln!("[fishnet] dev-seed: created {} sample alerts (1 dismissed)", alerts.len());
 }
 
-fn seed_spend(store: &SpendStore) {
+async fn seed_spend(store: &SpendStore) {
     let today = chrono::Utc::now().date_naive();
 
     let entries: &[(&str, u32, f64)] = &[
@@ -139,7 +186,7 @@ fn seed_spend(store: &SpendStore) {
             .unwrap()
             .format("%Y-%m-%d")
             .to_string();
-        if let Err(e) = store.record_spend(service, &date, cost) {
+        if let Err(e) = store.record_spend(service, &date, cost).await {
             eprintln!("[fishnet] dev-seed: failed to record spend: {e}");
         } else {
             count += 1;
@@ -149,7 +196,7 @@ fn seed_spend(store: &SpendStore) {
     eprintln!("[fishnet] dev-seed: inserted {count} spend records (14 days, 2 services)");
 }
 
-fn seed_budgets(store: &SpendStore) {
+async fn seed_budgets(store: &SpendStore) {
     let now = chrono::Utc::now().timestamp();
 
     let budgets = [
@@ -168,7 +215,7 @@ fn seed_budgets(store: &SpendStore) {
     ];
 
     for budget in &budgets {
-        if let Err(e) = store.set_budget(budget) {
+        if let Err(e) = store.set_budget(budget).await {
             eprintln!("[fishnet] dev-seed: failed to set budget: {e}");
         }
     }

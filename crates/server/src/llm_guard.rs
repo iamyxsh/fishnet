@@ -26,6 +26,12 @@ struct BaselineEntry {
     hash_algorithm: HashAlgorithm,
 }
 
+impl Default for BaselineStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BaselineStore {
     pub fn new() -> Self {
         Self {
@@ -98,14 +104,14 @@ impl BaselineStore {
         let snapshot = self.baselines.read().await.clone();
         match serde_json::to_string_pretty(&snapshot) {
             Ok(json) => {
-                if let Some(parent) = path.parent() {
-                    if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                        eprintln!(
-                            "[fishnet] failed to create baselines directory {}: {e}",
-                            parent.display()
-                        );
-                        return;
-                    }
+                if let Some(parent) = path.parent()
+                    && let Err(e) = tokio::fs::create_dir_all(parent).await
+                {
+                    eprintln!(
+                        "[fishnet] failed to create baselines directory {}: {e}",
+                        parent.display()
+                    );
+                    return;
                 }
                 let tmp_path = path.with_extension("json.tmp");
                 if let Err(e) = tokio::fs::write(&tmp_path, &json).await {
@@ -153,10 +159,10 @@ fn extract_text_from_content(value: &serde_json::Value) -> Option<String> {
     if let Some(blocks) = value.as_array() {
         let mut parts = Vec::new();
         for block in blocks {
-            if block.get("type").and_then(|t| t.as_str()) == Some("text") {
-                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
-                    parts.push(text);
-                }
+            if block.get("type").and_then(|t| t.as_str()) == Some("text")
+                && let Some(text) = block.get("text").and_then(|t| t.as_str())
+            {
+                parts.push(text);
             }
         }
         if !parts.is_empty() {
@@ -173,10 +179,10 @@ fn count_content_chars(value: &serde_json::Value) -> usize {
     if let Some(blocks) = value.as_array() {
         let mut total = 0;
         for block in blocks {
-            if block.get("type").and_then(|t| t.as_str()) == Some("text") {
-                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
-                    total += text.chars().count();
-                }
+            if block.get("type").and_then(|t| t.as_str()) == Some("text")
+                && let Some(text) = block.get("text").and_then(|t| t.as_str())
+            {
+                total += text.chars().count();
             }
         }
         return total;
@@ -343,9 +349,12 @@ pub async fn check_prompt_drift(
                     );
                     eprintln!("[fishnet] ALERT: {message}");
                     if alert_enabled {
-                        alert_store
+                        if let Err(e) = alert_store
                             .create(AlertType::PromptDrift, AlertSeverity::Critical, service, message)
-                            .await;
+                            .await
+                        {
+                            eprintln!("[fishnet] failed to create drift alert: {e}");
+                        }
                     }
                     GuardDecision::AllowWithAlert
                 }
@@ -355,9 +364,12 @@ pub async fn check_prompt_drift(
                     );
                     eprintln!("[fishnet] DENY: {message}");
                     if alert_enabled {
-                        alert_store
+                        if let Err(e) = alert_store
                             .create(AlertType::PromptDrift, AlertSeverity::Critical, service, message)
-                            .await;
+                            .await
+                        {
+                            eprintln!("[fishnet] failed to create drift alert: {e}");
+                        }
                     }
                     GuardDecision::Deny(
                         "System prompt drift detected. Request blocked by policy.".to_string(),
@@ -416,9 +428,12 @@ pub async fn check_prompt_size(
             );
             eprintln!("[fishnet] DENY: {message}");
             if alert_enabled {
-                alert_store
+                if let Err(e) = alert_store
                     .create(AlertType::PromptSize, AlertSeverity::Warning, service, message)
-                    .await;
+                    .await
+                {
+                    eprintln!("[fishnet] failed to create size alert: {e}");
+                }
             }
             GuardDecision::Deny(format!(
                 "Prompt size {measured_display} {unit} exceeds limit of {limit_display}"
@@ -430,9 +445,12 @@ pub async fn check_prompt_size(
             );
             eprintln!("[fishnet] ALERT: {message}");
             if alert_enabled {
-                alert_store
+                if let Err(e) = alert_store
                     .create(AlertType::PromptSize, AlertSeverity::Warning, service, message)
-                    .await;
+                    .await
+                {
+                    eprintln!("[fishnet] failed to create size alert: {e}");
+                }
             }
             GuardDecision::AllowWithAlert
         }
@@ -695,7 +713,7 @@ mod tests {
     #[tokio::test]
     async fn drift_disabled_skips_entirely() {
         let baselines = BaselineStore::new();
-        let alerts = Arc::new(AlertStore::new());
+        let alerts = Arc::new(AlertStore::open_in_memory().unwrap());
         let config = PromptDriftConfig {
             enabled: false,
             ..Default::default()
@@ -706,13 +724,13 @@ mod tests {
         assert_eq!(result, GuardDecision::Skipped);
 
         assert!(baselines.baselines.read().await.is_empty());
-        assert!(alerts.list().await.is_empty());
+        assert!(alerts.list().await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn drift_first_request_captures_baseline() {
         let baselines = BaselineStore::new();
-        let alerts = Arc::new(AlertStore::new());
+        let alerts = Arc::new(AlertStore::open_in_memory().unwrap());
         let config = PromptDriftConfig::default();
 
         let result = check_prompt_drift(
@@ -726,13 +744,13 @@ mod tests {
         .await;
         assert_eq!(result, GuardDecision::BaselineCaptured);
         assert!(baselines.baselines.read().await.contains_key("openai"));
-        assert!(alerts.list().await.is_empty());
+        assert!(alerts.list().await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn drift_same_prompt_no_alert() {
         let baselines = BaselineStore::new();
-        let alerts = Arc::new(AlertStore::new());
+        let alerts = Arc::new(AlertStore::open_in_memory().unwrap());
         let config = PromptDriftConfig::default();
         let prompt = "You are a helpful assistant.";
 
@@ -740,13 +758,13 @@ mod tests {
         let result =
             check_prompt_drift(&baselines, &alerts, "openai", Some(prompt), &config, true).await;
         assert_eq!(result, GuardDecision::Allow);
-        assert!(alerts.list().await.is_empty());
+        assert!(alerts.list().await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn drift_different_prompt_alert_mode() {
         let baselines = BaselineStore::new();
-        let alerts = Arc::new(AlertStore::new());
+        let alerts = Arc::new(AlertStore::open_in_memory().unwrap());
         let config = PromptDriftConfig {
             mode: GuardMode::Alert,
             ..Default::default()
@@ -757,7 +775,7 @@ mod tests {
             check_prompt_drift(&baselines, &alerts, "openai", Some("prompt v2"), &config, true).await;
         assert_eq!(result, GuardDecision::AllowWithAlert);
 
-        let alert_list = alerts.list().await;
+        let alert_list = alerts.list().await.unwrap();
         assert_eq!(alert_list.len(), 1);
         assert_eq!(alert_list[0].alert_type, AlertType::PromptDrift);
         assert_eq!(alert_list[0].severity, AlertSeverity::Critical);
@@ -767,7 +785,7 @@ mod tests {
     #[tokio::test]
     async fn drift_different_prompt_deny_mode() {
         let baselines = BaselineStore::new();
-        let alerts = Arc::new(AlertStore::new());
+        let alerts = Arc::new(AlertStore::open_in_memory().unwrap());
         let config = PromptDriftConfig {
             mode: GuardMode::Deny,
             ..Default::default()
@@ -781,13 +799,13 @@ mod tests {
             assert_eq!(msg, "System prompt drift detected. Request blocked by policy.");
         }
 
-        assert_eq!(alerts.list().await.len(), 1);
+        assert_eq!(alerts.list().await.unwrap().len(), 1);
     }
 
     #[tokio::test]
     async fn drift_different_prompt_ignore_mode() {
         let baselines = BaselineStore::new();
-        let alerts = Arc::new(AlertStore::new());
+        let alerts = Arc::new(AlertStore::open_in_memory().unwrap());
         let config = PromptDriftConfig {
             mode: GuardMode::Ignore,
             ..Default::default()
@@ -797,13 +815,13 @@ mod tests {
         let result =
             check_prompt_drift(&baselines, &alerts, "openai", Some("prompt v2"), &config, true).await;
         assert_eq!(result, GuardDecision::Allow);
-        assert!(alerts.list().await.is_empty());
+        assert!(alerts.list().await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn drift_alert_keeps_firing_on_repeated_injection() {
         let baselines = BaselineStore::new();
-        let alerts = Arc::new(AlertStore::new());
+        let alerts = Arc::new(AlertStore::open_in_memory().unwrap());
         let config = PromptDriftConfig {
             mode: GuardMode::Alert,
             ..Default::default()
@@ -816,17 +834,17 @@ mod tests {
 
         let r = check_prompt_drift(&baselines, &alerts, "openai", Some("injected"), &config, true).await;
         assert_eq!(r, GuardDecision::AllowWithAlert);
-        assert_eq!(alerts.list().await.len(), 2);
+        assert_eq!(alerts.list().await.unwrap().len(), 2);
 
         let r = check_prompt_drift(&baselines, &alerts, "openai", Some("original"), &config, true).await;
         assert_eq!(r, GuardDecision::Allow);
-        assert_eq!(alerts.list().await.len(), 2);
+        assert_eq!(alerts.list().await.unwrap().len(), 2);
     }
 
     #[tokio::test]
     async fn drift_deny_keeps_blocking_on_repeated_injection() {
         let baselines = BaselineStore::new();
-        let alerts = Arc::new(AlertStore::new());
+        let alerts = Arc::new(AlertStore::open_in_memory().unwrap());
         let config = PromptDriftConfig {
             mode: GuardMode::Deny,
             ..Default::default()
@@ -839,13 +857,13 @@ mod tests {
 
         let r = check_prompt_drift(&baselines, &alerts, "openai", Some("injected"), &config, true).await;
         assert!(matches!(r, GuardDecision::Deny(_)));
-        assert_eq!(alerts.list().await.len(), 2);
+        assert_eq!(alerts.list().await.unwrap().len(), 2);
     }
 
     #[tokio::test]
     async fn drift_ignore_keeps_detecting_on_repeated_injection() {
         let baselines = BaselineStore::new();
-        let alerts = Arc::new(AlertStore::new());
+        let alerts = Arc::new(AlertStore::open_in_memory().unwrap());
         let config = PromptDriftConfig {
             mode: GuardMode::Ignore,
             ..Default::default()
@@ -861,13 +879,13 @@ mod tests {
 
         let r = check_prompt_drift(&baselines, &alerts, "openai", Some("injected"), &config, true).await;
         assert_eq!(r, GuardDecision::Allow);
-        assert!(alerts.list().await.is_empty());
+        assert!(alerts.list().await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn drift_no_system_prompt_skips_gracefully() {
         let baselines = BaselineStore::new();
-        let alerts = Arc::new(AlertStore::new());
+        let alerts = Arc::new(AlertStore::open_in_memory().unwrap());
         let config = PromptDriftConfig::default();
 
         let result = check_prompt_drift(&baselines, &alerts, "openai", None, &config, true).await;
@@ -878,7 +896,7 @@ mod tests {
     #[tokio::test]
     async fn drift_hash_chars_detects_change_within_range() {
         let baselines = BaselineStore::new();
-        let alerts = Arc::new(AlertStore::new());
+        let alerts = Arc::new(AlertStore::open_in_memory().unwrap());
         let config = PromptDriftConfig {
             hash_chars: 500,
             mode: GuardMode::Alert,
@@ -898,7 +916,7 @@ mod tests {
     #[tokio::test]
     async fn drift_hash_chars_misses_change_beyond_range() {
         let baselines = BaselineStore::new();
-        let alerts = Arc::new(AlertStore::new());
+        let alerts = Arc::new(AlertStore::open_in_memory().unwrap());
         let config = PromptDriftConfig {
             hash_chars: 500,
             mode: GuardMode::Alert,
@@ -913,13 +931,13 @@ mod tests {
         let result =
             check_prompt_drift(&baselines, &alerts, "openai", Some(&prompt_v2), &config, true).await;
         assert_eq!(result, GuardDecision::Allow);
-        assert!(alerts.list().await.is_empty());
+        assert!(alerts.list().await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn drift_hash_chars_zero_detects_any_change() {
         let baselines = BaselineStore::new();
-        let alerts = Arc::new(AlertStore::new());
+        let alerts = Arc::new(AlertStore::open_in_memory().unwrap());
         let config = PromptDriftConfig {
             hash_chars: 0,
             mode: GuardMode::Alert,
@@ -938,7 +956,7 @@ mod tests {
     #[tokio::test]
     async fn drift_ignore_whitespace_true_no_false_positive() {
         let baselines = BaselineStore::new();
-        let alerts = Arc::new(AlertStore::new());
+        let alerts = Arc::new(AlertStore::open_in_memory().unwrap());
         let config = PromptDriftConfig {
             ignore_whitespace: true,
             mode: GuardMode::Alert,
@@ -969,7 +987,7 @@ mod tests {
     #[tokio::test]
     async fn drift_ignore_whitespace_false_detects_spaces() {
         let baselines = BaselineStore::new();
-        let alerts = Arc::new(AlertStore::new());
+        let alerts = Arc::new(AlertStore::open_in_memory().unwrap());
         let config = PromptDriftConfig {
             ignore_whitespace: false,
             mode: GuardMode::Alert,
@@ -1000,7 +1018,7 @@ mod tests {
     #[tokio::test]
     async fn drift_config_change_clears_baseline() {
         let baselines = BaselineStore::new();
-        let alerts = Arc::new(AlertStore::new());
+        let alerts = Arc::new(AlertStore::open_in_memory().unwrap());
 
         let config_v1 = PromptDriftConfig {
             hash_chars: 0,
@@ -1020,7 +1038,7 @@ mod tests {
     #[tokio::test]
     async fn drift_baseline_clear_on_explicit_clear() {
         let baselines = BaselineStore::new();
-        let alerts = Arc::new(AlertStore::new());
+        let alerts = Arc::new(AlertStore::open_in_memory().unwrap());
         let config = PromptDriftConfig::default();
 
         check_prompt_drift(&baselines, &alerts, "openai", Some("hello"), &config, true).await;
@@ -1036,19 +1054,19 @@ mod tests {
 
     #[tokio::test]
     async fn size_guard_disabled_skips() {
-        let alerts = Arc::new(AlertStore::new());
+        let alerts = Arc::new(AlertStore::open_in_memory().unwrap());
         let config = PromptSizeGuardConfig {
             enabled: false,
             ..Default::default()
         };
         let result = check_prompt_size(&alerts, "openai", 999999, &config, true).await;
         assert_eq!(result, GuardDecision::Skipped);
-        assert!(alerts.list().await.is_empty());
+        assert!(alerts.list().await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn size_guard_under_limit_passes() {
-        let alerts = Arc::new(AlertStore::new());
+        let alerts = Arc::new(AlertStore::open_in_memory().unwrap());
         let config = PromptSizeGuardConfig {
             enabled: true,
             max_prompt_tokens: 50_000,
@@ -1057,12 +1075,12 @@ mod tests {
         };
         let result = check_prompt_size(&alerts, "openai", 160_000, &config, true).await;
         assert_eq!(result, GuardDecision::Allow);
-        assert!(alerts.list().await.is_empty());
+        assert!(alerts.list().await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn size_guard_over_limit_deny() {
-        let alerts = Arc::new(AlertStore::new());
+        let alerts = Arc::new(AlertStore::open_in_memory().unwrap());
         let config = PromptSizeGuardConfig {
             enabled: true,
             max_prompt_tokens: 50_000,
@@ -1071,12 +1089,12 @@ mod tests {
         };
         let result = check_prompt_size(&alerts, "openai", 240_000, &config, true).await;
         assert!(matches!(result, GuardDecision::Deny(_)));
-        assert_eq!(alerts.list().await.len(), 1);
+        assert_eq!(alerts.list().await.unwrap().len(), 1);
     }
 
     #[tokio::test]
     async fn size_guard_over_limit_alert() {
-        let alerts = Arc::new(AlertStore::new());
+        let alerts = Arc::new(AlertStore::open_in_memory().unwrap());
         let config = PromptSizeGuardConfig {
             enabled: true,
             max_prompt_tokens: 50_000,
@@ -1085,14 +1103,14 @@ mod tests {
         };
         let result = check_prompt_size(&alerts, "openai", 240_000, &config, true).await;
         assert_eq!(result, GuardDecision::AllowWithAlert);
-        let alert_list = alerts.list().await;
+        let alert_list = alerts.list().await.unwrap();
         assert_eq!(alert_list.len(), 1);
         assert_eq!(alert_list[0].alert_type, AlertType::PromptSize);
     }
 
     #[tokio::test]
     async fn size_guard_chars_overrides_tokens() {
-        let alerts = Arc::new(AlertStore::new());
+        let alerts = Arc::new(AlertStore::open_in_memory().unwrap());
         let config = PromptSizeGuardConfig {
             enabled: true,
             max_prompt_tokens: 50_000,
@@ -1108,7 +1126,7 @@ mod tests {
 
     #[tokio::test]
     async fn size_guard_chars_takes_priority_over_tokens() {
-        let alerts = Arc::new(AlertStore::new());
+        let alerts = Arc::new(AlertStore::open_in_memory().unwrap());
         let config = PromptSizeGuardConfig {
             enabled: true,
             max_prompt_tokens: 1_000,
@@ -1121,7 +1139,7 @@ mod tests {
 
     #[tokio::test]
     async fn size_guard_token_mode_uses_approximate_prefix() {
-        let alerts = Arc::new(AlertStore::new());
+        let alerts = Arc::new(AlertStore::open_in_memory().unwrap());
         let config = PromptSizeGuardConfig {
             enabled: true,
             max_prompt_tokens: 100,
@@ -1139,7 +1157,7 @@ mod tests {
 
     #[tokio::test]
     async fn size_guard_char_mode_uses_exact_number() {
-        let alerts = Arc::new(AlertStore::new());
+        let alerts = Arc::new(AlertStore::open_in_memory().unwrap());
         let config = PromptSizeGuardConfig {
             enabled: true,
             max_prompt_tokens: 50_000,
@@ -1161,7 +1179,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("baselines.json");
         let config = PromptDriftConfig::default();
-        let alerts = Arc::new(AlertStore::new());
+        let alerts = Arc::new(AlertStore::open_in_memory().unwrap());
 
         {
             let store = BaselineStore::with_persistence(path.clone(), false);
@@ -1186,7 +1204,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("baselines.json");
         let config = PromptDriftConfig::default();
-        let alerts = Arc::new(AlertStore::new());
+        let alerts = Arc::new(AlertStore::open_in_memory().unwrap());
 
         {
             let store = BaselineStore::with_persistence(path.clone(), false);
@@ -1210,7 +1228,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("baselines.json");
         let config = PromptDriftConfig::default();
-        let alerts = Arc::new(AlertStore::new());
+        let alerts = Arc::new(AlertStore::open_in_memory().unwrap());
 
         let store = BaselineStore::with_persistence(path.clone(), false);
         check_prompt_drift(&store, &alerts, "openai", Some("hello"), &config, true).await;
@@ -1248,7 +1266,7 @@ mod tests {
     #[tokio::test]
     async fn persistence_in_memory_store_does_not_persist() {
         let store = BaselineStore::new();
-        let alerts = Arc::new(AlertStore::new());
+        let alerts = Arc::new(AlertStore::open_in_memory().unwrap());
         let config = PromptDriftConfig::default();
 
         let result =
