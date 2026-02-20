@@ -3,12 +3,28 @@ export const ROUTES = {
   SETTINGS: "/settings",
   LOGIN: "/login",
   ALERTS: "/alerts",
+  SPEND: "/spend",
 } as const;
 
 export const POLLING_INTERVALS = {
   STATUS: 5_000,
   ALERTS: 30_000,
+  SPEND: 60_000,
 } as const;
+
+/** Hex colors for recharts chart fills (mirrors CSS service color vars) */
+export const SERVICE_CHART_COLORS: Record<string, string> = {
+  openai: "#22C55E",
+  anthropic: "#3B82F6",
+  binance: "#F59E0B",
+  github: "#A1A1AA",
+  stripe: "#8B5CF6",
+  aws: "#22C55E",
+  gcp: "#3B82F6",
+  twilio: "#8B5CF6",
+  sendgrid: "#F59E0B",
+  custom: "#8B5CF6",
+};
 
 export const SERVICES = [
   "openai",

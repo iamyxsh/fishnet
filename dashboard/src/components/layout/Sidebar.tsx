@@ -39,7 +39,7 @@ const mainNavItems: NavItemData[] = [
   { label: "Credentials", icon: <Key size={18} />, disabled: true },
   { label: "Policies", icon: <Sliders size={18} />, disabled: true },
   { label: "Audit Log", icon: <FileText size={18} />, disabled: true },
-  { label: "Analytics", icon: <BarChart3 size={18} />, disabled: true },
+  { to: ROUTES.SPEND, label: "Spend", icon: <BarChart3 size={18} /> },
 ];
 
 function getSecondaryNavItems(alertCount: number): NavItemData[] {

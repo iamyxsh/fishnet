@@ -1,20 +1,21 @@
 import { Link } from "react-router-dom";
 import { StatCard } from "@/components/ui/StatCard";
 import { Zap, DollarSign, Activity, AlertTriangle } from "lucide-react";
-import { formatCurrency } from "@/lib/format";
+import { formatDollars } from "@/lib/format";
 import { ROUTES } from "@/lib/constants";
-import type { StatusResponse, SpendResponse } from "@/api/types";
+import type { StatusResponse, SpendAnalyticsResponse } from "@/api/types";
 
 interface MetricCardsProps {
   status: StatusResponse;
-  spend: SpendResponse | null;
+  spend: SpendAnalyticsResponse | null;
   activeAlerts: number;
 }
 
 export function MetricCards({ status, spend, activeAlerts }: MetricCardsProps) {
-  const totalSpent = spend?.total_spent_cents ?? 0;
-  const totalBudget = spend?.total_budget_cents ?? 0;
-  const spendPct = totalBudget > 0 ? (totalSpent / totalBudget) * 100 : 0;
+  const budgets = spend?.budgets ?? {};
+  const totalSpent = Object.values(budgets).reduce((s, b) => s + b.spent_today, 0);
+  const totalLimit = Object.values(budgets).reduce((s, b) => s + (b.daily_limit ?? 0), 0);
+  const spendPct = totalLimit > 0 ? (totalSpent / totalLimit) * 100 : 0;
 
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
@@ -28,17 +29,19 @@ export function MetricCards({ status, spend, activeAlerts }: MetricCardsProps) {
       />
 
       {/* Today's Spend */}
-      <StatCard
-        label="Today's Spend"
-        value={formatCurrency(totalSpent)}
-        icon={<DollarSign size={18} />}
-        accentColor="bg-brand"
-        progress={{
-          value: spendPct,
-          color: spendPct > 90 ? "bg-danger" : spendPct > 70 ? "bg-warning" : "bg-brand",
-        }}
-        subtitle={`${formatCurrency(totalBudget)} limit`}
-      />
+      <Link to={ROUTES.SPEND} className="block">
+        <StatCard
+          label="Today's Spend"
+          value={formatDollars(totalSpent)}
+          icon={<DollarSign size={18} />}
+          accentColor="bg-brand"
+          progress={{
+            value: spendPct,
+            color: spendPct > 90 ? "bg-danger" : spendPct > 70 ? "bg-warning" : "bg-brand",
+          }}
+          subtitle={totalLimit > 0 ? `${formatDollars(totalLimit)} limit` : "No limits set"}
+        />
+      </Link>
 
       {/* Active Services */}
       <StatCard

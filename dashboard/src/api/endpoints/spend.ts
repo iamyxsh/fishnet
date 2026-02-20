@@ -1,6 +1,6 @@
 import { apiFetch } from "../client";
-import type { SpendResponse } from "../types";
+import type { SpendAnalyticsResponse } from "../types";
 
-export function fetchSpend(period: "24h" | "7d" | "30d" = "24h") {
-  return apiFetch<SpendResponse>(`/spend?period=${period}`);
+export function fetchSpend(): Promise<SpendAnalyticsResponse> {
+  return apiFetch<SpendAnalyticsResponse>("/spend?days=1");
 }

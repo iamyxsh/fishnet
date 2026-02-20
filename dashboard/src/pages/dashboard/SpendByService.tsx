@@ -1,43 +1,51 @@
 import { Card } from "@/components/ui/Card";
-import { formatCurrency } from "@/lib/format";
+import { formatDollars } from "@/lib/format";
 import { SERVICE_LABELS, SERVICE_BAR_CLASSES, SERVICE_GLOW_CLASSES } from "@/lib/constants";
 import { cn } from "@/lib/cn";
-import type { SpendResponse } from "@/api/types";
+import type { SpendAnalyticsResponse } from "@/api/types";
 import type { ServiceName } from "@/lib/constants";
 
 interface SpendByServiceProps {
-  spend: SpendResponse;
+  spend: SpendAnalyticsResponse;
 }
 
 export function SpendByService({ spend }: SpendByServiceProps) {
+  const entries = Object.entries(spend.budgets);
+
   return (
     <Card title="Spend by Service" padding={false}>
       <div className="divide-y divide-border-subtle">
-        {spend.buckets.map((bucket, i) => {
+        {entries.map(([service, budget], i) => {
           const pct =
-            bucket.budget_cents > 0
-              ? (bucket.spent_cents / bucket.budget_cents) * 100
+            budget.daily_limit != null && budget.daily_limit > 0
+              ? (budget.spent_today / budget.daily_limit) * 100
               : 0;
           const barClass =
-            SERVICE_BAR_CLASSES[bucket.service] ?? "bg-purple";
-          const glowClass = SERVICE_GLOW_CLASSES[bucket.service] ?? "";
+            SERVICE_BAR_CLASSES[service] ?? "bg-purple";
+          const glowClass = SERVICE_GLOW_CLASSES[service] ?? "";
 
           return (
             <div
-              key={bucket.service}
+              key={service}
               className="animate-fade-in-up px-6 py-4 transition-colors duration-150 hover:bg-surface-hover/50"
               style={{ animationDelay: `${i * 50}ms` }}
             >
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium text-text">
-                  {SERVICE_LABELS[bucket.service as ServiceName] ?? bucket.service}
+                  {SERVICE_LABELS[service as ServiceName] ?? service}
                 </span>
                 <span className="font-mono text-sm text-text-secondary">
                   <span className="font-semibold text-text">
-                    {formatCurrency(bucket.spent_cents)}
+                    {formatDollars(budget.spent_today)}
                   </span>
-                  {" / "}
-                  {formatCurrency(bucket.budget_cents)}
+                  {budget.daily_limit != null ? (
+                    <>
+                      {" / "}
+                      {formatDollars(budget.daily_limit)}
+                    </>
+                  ) : (
+                    <span className="ml-1 text-xs text-text-tertiary">no limit</span>
+                  )}
                 </span>
               </div>
               <div className="mt-2.5 h-[6px] w-full overflow-hidden rounded-full bg-bg-tertiary">

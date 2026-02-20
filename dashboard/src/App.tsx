@@ -12,6 +12,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 const DashboardPage = lazy(() => import("@/pages/dashboard/DashboardPage"));
 const SettingsPage = lazy(() => import("@/pages/settings/SettingsPage"));
 const AlertsPage = lazy(() => import("@/pages/alerts/AlertsPage"));
+const SpendPage = lazy(() => import("@/pages/spend/SpendPage"));
 const LoginPage = lazy(() => import("@/pages/login/LoginPage"));
 
 function PageLoader() {
@@ -76,6 +77,14 @@ export default function App() {
                 element={
                   <Suspense fallback={<PageLoader />}>
                     <AlertsPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path={ROUTES.SPEND}
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <SpendPage />
                   </Suspense>
                 }
               />

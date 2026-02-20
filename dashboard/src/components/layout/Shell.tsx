@@ -10,12 +10,14 @@ const routeTitles: Record<string, string> = {
   [ROUTES.HOME]: "Dashboard",
   [ROUTES.SETTINGS]: "Settings",
   [ROUTES.ALERTS]: "Alerts",
+  [ROUTES.SPEND]: "Spend Analytics",
 };
 
 const routeSubtitles: Record<string, string> = {
   [ROUTES.HOME]: "Overview and control center for your Fishnet instance",
   [ROUTES.SETTINGS]: "User preferences and integrations",
   [ROUTES.ALERTS]: "Monitor and manage security and budget alerts",
+  [ROUTES.SPEND]: "Budget tracking and daily spend breakdown",
 };
 
 export function Shell() {

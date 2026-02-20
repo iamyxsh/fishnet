@@ -9,6 +9,10 @@ export function formatCurrency(cents: number): string {
   return currencyFmt.format(cents / 100);
 }
 
+export function formatDollars(amount: number): string {
+  return currencyFmt.format(amount);
+}
+
 /** Human-readable relative time from a unix timestamp (seconds) */
 export function timeAgoUnix(ts: number): string {
   const diff = Date.now() - ts * 1000;
