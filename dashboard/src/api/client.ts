@@ -56,10 +56,12 @@ export async function apiFetch<T>(
   opts?: RequestInit,
 ): Promise<T> {
   const isAuthEndpoint = path.startsWith("/auth/");
+  const isAlertEndpoint = path.startsWith("/alerts");
 
-  // Auth endpoints → real backend if available, otherwise mock
+  // Auth & alert endpoints → real backend if available, otherwise mock
   // Data endpoints → always mock until backend implements them
-  const shouldMock = isAuthEndpoint
+  const isBackendEndpoint = isAuthEndpoint || isAlertEndpoint;
+  const shouldMock = isBackendEndpoint
     ? !backendAvailable
     : useMockForData;
 

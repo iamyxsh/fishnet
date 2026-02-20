@@ -1,14 +1,17 @@
+import { Link } from "react-router-dom";
 import { StatCard } from "@/components/ui/StatCard";
-import { Zap, DollarSign, Activity, ShieldAlert } from "lucide-react";
+import { Zap, DollarSign, Activity, AlertTriangle } from "lucide-react";
 import { formatCurrency } from "@/lib/format";
+import { ROUTES } from "@/lib/constants";
 import type { StatusResponse, SpendResponse } from "@/api/types";
 
 interface MetricCardsProps {
   status: StatusResponse;
   spend: SpendResponse | null;
+  activeAlerts: number;
 }
 
-export function MetricCards({ status, spend }: MetricCardsProps) {
+export function MetricCards({ status, spend, activeAlerts }: MetricCardsProps) {
   const totalSpent = spend?.total_spent_cents ?? 0;
   const totalBudget = spend?.total_budget_cents ?? 0;
   const spendPct = totalBudget > 0 ? (totalSpent / totalBudget) * 100 : 0;
@@ -50,18 +53,24 @@ export function MetricCards({ status, spend }: MetricCardsProps) {
         accentColor="bg-brand"
       />
 
-      {/* Denied Requests */}
-      <StatCard
-        label="Denied Requests"
-        value={status.blocked_requests_24h}
-        icon={<ShieldAlert size={18} />}
-        trend={
-          status.blocked_requests_24h > 0 ? (
-            <span className="text-danger">↘ +{status.blocked_requests_24h} today</span>
-          ) : undefined
-        }
-        accentColor="bg-brand"
-      />
+      {/* Active Alerts — links to /alerts */}
+      <Link to={ROUTES.ALERTS} className="block">
+        <StatCard
+          label="Active Alerts"
+          value={activeAlerts}
+          icon={<AlertTriangle size={18} />}
+          trend={
+            activeAlerts > 0 ? (
+              <span className="text-warning">
+                {activeAlerts} warning{activeAlerts !== 1 ? "s" : ""}
+              </span>
+            ) : (
+              <span className="text-success">All clear</span>
+            )
+          }
+          accentColor={activeAlerts > 0 ? "bg-warning" : "bg-brand"}
+        />
+      </Link>
     </div>
   );
 }

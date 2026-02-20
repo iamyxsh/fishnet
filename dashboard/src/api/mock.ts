@@ -102,7 +102,7 @@ const routes: Record<string, (opts?: RequestInit) => unknown> = {
       {
         id: "w1",
         level: "warning",
-        message: "OpenAI daily budget at 92.6% — $18.53 of $20.00 used",
+        message: "OpenAI daily budget at 92.6% \u2014 $18.53 of $20.00 used",
         timestamp: new Date().toISOString(),
         ongoing: true,
       },
@@ -132,7 +132,10 @@ const routes: Record<string, (opts?: RequestInit) => unknown> = {
   }),
 };
 
-function matchRoute(path: string, method: string): ((opts?: RequestInit) => unknown) | undefined {
+function matchRoute(
+  path: string,
+  method: string,
+): ((opts?: RequestInit) => unknown) | undefined {
   const cleanPath = path.split("?")[0];
   const key = `${method} ${cleanPath}`;
   if (routes[key]) return routes[key];

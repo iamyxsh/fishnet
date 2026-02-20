@@ -23,6 +23,7 @@ interface SidebarProps {
   onToggle: () => void;
   proxyStatus?: ProxyStatus;
   version?: string;
+  alertCount?: number;
 }
 
 interface NavItemData {
@@ -30,6 +31,7 @@ interface NavItemData {
   label: string;
   icon: React.ReactNode;
   disabled?: boolean;
+  badge?: number;
 }
 
 const mainNavItems: NavItemData[] = [
@@ -40,17 +42,26 @@ const mainNavItems: NavItemData[] = [
   { label: "Analytics", icon: <BarChart3 size={18} />, disabled: true },
 ];
 
-const secondaryNavItems: NavItemData[] = [
-  { label: "Alerts", icon: <AlertTriangle size={18} />, disabled: true },
-  { to: ROUTES.SETTINGS, label: "Settings", icon: <Settings size={18} /> },
-];
+function getSecondaryNavItems(alertCount: number): NavItemData[] {
+  return [
+    {
+      to: ROUTES.ALERTS,
+      label: "Alerts",
+      icon: <AlertTriangle size={18} />,
+      badge: alertCount,
+    },
+    { to: ROUTES.SETTINGS, label: "Settings", icon: <Settings size={18} /> },
+  ];
+}
 
 export function Sidebar({
   collapsed,
   onToggle,
   proxyStatus = "running",
   version = "0.1.0",
+  alertCount = 0,
 }: SidebarProps) {
+  const secondaryNavItems = getSecondaryNavItems(alertCount);
   const { logout } = useAuth();
   const navigate = useNavigate();
 
@@ -220,6 +231,18 @@ function SidebarNavItem({
           {item.icon}
         </span>
         {!collapsed && <span>{item.label}</span>}
+
+        {/* Alert count badge */}
+        {item.badge != null && item.badge > 0 && (
+          <span
+            className={cn(
+              "flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-danger px-1 text-[10px] font-bold leading-none text-white",
+              collapsed ? "absolute -right-0.5 -top-0.5" : "ml-auto",
+            )}
+          >
+            {item.badge > 99 ? "99+" : item.badge}
+          </span>
+        )}
       </NavLink>
     </li>
   );
