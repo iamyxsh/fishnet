@@ -20,7 +20,7 @@ pub struct AppState {
     pub rate_limiter: Arc<LoginRateLimiter>,
     pub proxy_rate_limiter: Arc<ProxyRateLimiter>,
     pub config_rx: watch::Receiver<Arc<FishnetConfig>>,
-    pub config_path: Option<PathBuf>,
+    pub config_path: PathBuf,
     pub alert_store: Arc<AlertStore>,
     pub baseline_store: Arc<BaselineStore>,
     pub spend_store: Arc<SpendStore>,

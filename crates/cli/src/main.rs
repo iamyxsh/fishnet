@@ -49,7 +49,10 @@ async fn main() {
 
     let (config_tx, config_rx) = config_channel(config);
 
-    let config_path_for_state = config_path.clone();
+    let config_path_for_state = config_path
+        .clone()
+        .or_else(fishnet_server::config::default_config_path)
+        .unwrap_or_else(|| std::path::PathBuf::from(fishnet_server::constants::CONFIG_FILE));
     let _watcher_guard = config_path.map(|path| spawn_config_watcher(path, config_tx));
 
     let baseline_store = Arc::new(match BaselineStore::default_path() {

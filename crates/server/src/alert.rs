@@ -424,18 +424,7 @@ pub async fn update_alert_config(
         updated.alerts.retention_days = v;
     }
 
-    let config_path = match &state.config_path {
-        Some(p) => p.clone(),
-        None => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": "no config file path configured" })),
-            )
-                .into_response();
-        }
-    };
-
-    match crate::config::save_config(&config_path, &updated) {
+    match crate::config::save_config(&state.config_path, &updated) {
         Ok(()) => Json(serde_json::json!({
             "success": true,
             "toggles": {
