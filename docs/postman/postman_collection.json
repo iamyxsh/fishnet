@@ -1203,6 +1203,645 @@
 			]
 		},
 		{
+			"name": "Onchain",
+			"description": "Onchain permit signing — signer status, config management, transaction submission, stats, and permit history (protected). Auto-authenticates if no valid token is present.",
+			"event": [
+				{
+					"listen": "prerequest",
+					"script": {
+						"exec": [
+							"const baseUrl = pm.collectionVariables.get('baseUrl');",
+							"const token = pm.collectionVariables.get('token');",
+							"",
+							"function login(callback) {",
+							"    const password = pm.collectionVariables.get('password');",
+							"    if (!password) {",
+							"        console.error('No password set — set the \"password\" collection variable');",
+							"        return callback(new Error('No password configured'));",
+							"    }",
+							"",
+							"    pm.sendRequest({",
+							"        url: baseUrl + '/api/auth/login',",
+							"        method: 'POST',",
+							"        header: { 'Content-Type': 'application/json' },",
+							"        body: {",
+							"            mode: 'raw',",
+							"            raw: JSON.stringify({ password: password })",
+							"        }",
+							"    }, (err, res) => {",
+							"        if (err) return callback(err);",
+							"        if (res.code !== 200) {",
+							"            console.error('Auto-login failed (' + res.code + '): ' + res.text());",
+							"            return callback(new Error('Auto-login failed with status ' + res.code));",
+							"        }",
+							"        const body = res.json();",
+							"        pm.collectionVariables.set('token', body.token);",
+							"        console.log('Auto-login successful — token saved');",
+							"        callback(null);",
+							"    });",
+							"}",
+							"",
+							"if (!token) {",
+							"    console.log('No token found — logging in automatically');",
+							"    login((err) => { if (err) console.error(err.message); });",
+							"} else {",
+							"    pm.sendRequest({",
+							"        url: baseUrl + '/api/auth/status',",
+							"        method: 'GET',",
+							"        header: { 'Authorization': 'Bearer ' + token }",
+							"    }, (err, res) => {",
+							"        if (err || res.code !== 200) {",
+							"            console.log('Token check failed — re-logging in');",
+							"            login((loginErr) => { if (loginErr) console.error(loginErr.message); });",
+							"            return;",
+							"        }",
+							"        const body = res.json();",
+							"        if (body.authenticated) {",
+							"            console.log('Existing token is valid');",
+							"        } else {",
+							"            console.log('Token expired — re-logging in');",
+							"            login((loginErr) => { if (loginErr) console.error(loginErr.message); });",
+							"        }",
+							"    });",
+							"}"
+						]
+					}
+				}
+			],
+			"item": [
+				{
+					"name": "Signer Status",
+					"description": "GET /api/signer/status — view signer mode, address, chain IDs, config, and signing stats",
+					"item": [
+						{
+							"name": "Signer status",
+							"request": {
+								"method": "GET",
+								"url": {
+									"raw": "{{baseUrl}}/api/signer/status",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "signer", "status"]
+								},
+								"header": [
+									{ "key": "Authorization", "value": "Bearer {{token}}" }
+								]
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test('Status 200', () => pm.response.to.have.status(200));",
+											"",
+											"pm.test('Returns signer info', () => {",
+											"    const body = pm.response.json();",
+											"    if (body.enabled) {",
+											"        pm.expect(body.mode).to.be.a('string');",
+											"        pm.expect(body.address).to.match(/^0x[0-9a-f]{40}$/i);",
+											"        pm.expect(body.chain_ids).to.be.an('array');",
+											"        pm.expect(body.config).to.be.an('object');",
+											"        pm.expect(body.stats).to.be.an('object');",
+											"    } else {",
+											"        pm.expect(body.enabled).to.be.false;",
+											"    }",
+											"});"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "Signer status (no token — 401)",
+							"request": {
+								"method": "GET",
+								"url": {
+									"raw": "{{baseUrl}}/api/signer/status",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "signer", "status"]
+								}
+							},
+							"event": [
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"// Override folder-level auto-auth to test 401."
+										]
+									}
+								},
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test('Status 401 Unauthorized', () => pm.response.to.have.status(401));"
+										]
+									}
+								}
+							]
+						}
+					]
+				},
+				{
+					"name": "Config",
+					"description": "GET/PUT /api/onchain/config — view and update onchain policy configuration",
+					"item": [
+						{
+							"name": "Get onchain config",
+							"request": {
+								"method": "GET",
+								"url": {
+									"raw": "{{baseUrl}}/api/onchain/config",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "onchain", "config"]
+								},
+								"header": [
+									{ "key": "Authorization", "value": "Bearer {{token}}" }
+								]
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test('Status 200', () => pm.response.to.have.status(200));",
+											"",
+											"pm.test('Returns onchain config structure', () => {",
+											"    const body = pm.response.json();",
+											"    pm.expect(body).to.have.property('enabled');",
+											"    pm.expect(body.chain_ids).to.be.an('array');",
+											"    pm.expect(body.limits).to.be.an('object');",
+											"    pm.expect(body.limits).to.have.property('max_tx_value_usd');",
+											"    pm.expect(body.limits).to.have.property('daily_spend_cap_usd');",
+											"    pm.expect(body.limits).to.have.property('cooldown_seconds');",
+											"    pm.expect(body.limits).to.have.property('max_slippage_bps');",
+											"    pm.expect(body.limits).to.have.property('max_leverage');",
+											"    pm.expect(body.permits).to.be.an('object');",
+											"    pm.expect(body.permits).to.have.property('expiry_seconds');",
+											"    pm.expect(body.permits).to.have.property('require_policy_hash');",
+											"    pm.expect(body.permits).to.have.property('verifying_contract');",
+											"    pm.expect(body.whitelist).to.be.an('object');",
+											"});"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "Update onchain config (partial)",
+							"request": {
+								"method": "PUT",
+								"url": {
+									"raw": "{{baseUrl}}/api/onchain/config",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "onchain", "config"]
+								},
+								"header": [
+									{ "key": "Authorization", "value": "Bearer {{token}}" },
+									{ "key": "Content-Type", "value": "application/json" }
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"cooldown_seconds\": 120,\n    \"max_tx_value_usd\": 200.0\n}"
+								}
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test('Status 200', () => pm.response.to.have.status(200));",
+											"",
+											"pm.test('Returns updated config', () => {",
+											"    const body = pm.response.json();",
+											"    pm.expect(body.success).to.be.true;",
+											"    pm.expect(body.limits.cooldown_seconds).to.eql(120);",
+											"    pm.expect(body.limits.max_tx_value_usd).to.eql(200.0);",
+											"});"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "Update onchain config (invalid values — 400)",
+							"request": {
+								"method": "PUT",
+								"url": {
+									"raw": "{{baseUrl}}/api/onchain/config",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "onchain", "config"]
+								},
+								"header": [
+									{ "key": "Authorization", "value": "Bearer {{token}}" },
+									{ "key": "Content-Type", "value": "application/json" }
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"max_tx_value_usd\": -10.0,\n    \"max_slippage_bps\": 99999\n}"
+								}
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test('Status 400', () => pm.response.to.have.status(400));",
+											"",
+											"pm.test('Returns validation errors array', () => {",
+											"    const body = pm.response.json();",
+											"    pm.expect(body.errors).to.be.an('array');",
+											"    pm.expect(body.errors.length).to.be.at.least(2);",
+											"});"
+										]
+									}
+								}
+							]
+						}
+					]
+				},
+				{
+					"name": "Submit Transaction",
+					"description": "POST /onchain/submit — submit a transaction for permit signing. Runs policy checks (chain ID, whitelist, selectors, value caps, cooldown) before signing.",
+					"item": [
+						{
+							"name": "Submit (approved)",
+							"request": {
+								"method": "POST",
+								"url": {
+									"raw": "{{baseUrl}}/onchain/submit",
+									"host": ["{{baseUrl}}"],
+									"path": ["onchain", "submit"]
+								},
+								"header": [
+									{ "key": "Authorization", "value": "Bearer {{token}}" },
+									{ "key": "Content-Type", "value": "application/json" }
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"target\": \"0x3fC91A3afd70395Cd496C647d5a6CC9D4B2b7FAD\",\n    \"calldata\": \"0x3593564c000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000001\",\n    \"value\": \"0\",\n    \"chain_id\": 8453\n}"
+								}
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"// Requires onchain.enabled = true in fishnet.toml with:",
+											"// - chain_ids including 8453",
+											"// - whitelist including the target contract",
+											"// - verifying_contract configured",
+											"",
+											"const body = pm.response.json();",
+											"",
+											"if (body.status === 'approved') {",
+											"    pm.test('Permit approved', () => {",
+											"        pm.expect(body.permit).to.be.an('object');",
+											"        pm.expect(body.permit.wallet).to.match(/^0x/);",
+											"        pm.expect(body.permit.chainId).to.eql(8453);",
+											"        pm.expect(body.permit.nonce).to.be.a('number');",
+											"        pm.expect(body.permit.expiry).to.be.a('number');",
+											"        pm.expect(body.permit.target).to.be.a('string');",
+											"        pm.expect(body.permit.calldataHash).to.match(/^0x/);",
+											"        pm.expect(body.permit.verifyingContract).to.match(/^0x/);",
+											"        pm.expect(body.signature).to.match(/^0x/);",
+											"    });",
+											"} else if (body.status === 'denied') {",
+											"    pm.test('Permit denied with reason', () => {",
+											"        pm.expect(body.reason).to.be.a('string');",
+											"        pm.expect(body.limit).to.be.a('string');",
+											"    });",
+											"} else {",
+											"    pm.test('Returns error or disabled message', () => {",
+											"        pm.expect(body.error).to.be.a('string');",
+											"    });",
+											"}"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "Submit (onchain disabled — 400)",
+							"request": {
+								"method": "POST",
+								"url": {
+									"raw": "{{baseUrl}}/onchain/submit",
+									"host": ["{{baseUrl}}"],
+									"path": ["onchain", "submit"]
+								},
+								"header": [
+									{ "key": "Authorization", "value": "Bearer {{token}}" },
+									{ "key": "Content-Type", "value": "application/json" }
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"target\": \"0x3fC91A3afd70395Cd496C647d5a6CC9D4B2b7FAD\",\n    \"calldata\": \"0x3593564c\",\n    \"value\": \"0\",\n    \"chain_id\": 8453\n}"
+								}
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"// If onchain is disabled in config, expect 400.",
+											"// If enabled, this will succeed or be policy-denied.",
+											"",
+											"const body = pm.response.json();",
+											"",
+											"if (pm.response.code === 400 && body.error === 'onchain_disabled') {",
+											"    pm.test('Onchain disabled', () => {",
+											"        pm.expect(body.error).to.eql('onchain_disabled');",
+											"    });",
+											"} else {",
+											"    pm.test('Onchain is enabled — got a different response', () => {",
+											"        pm.expect(body.status).to.be.oneOf(['approved', 'denied', 'error']);",
+											"    });",
+											"}"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "Submit (invalid target — 400)",
+							"request": {
+								"method": "POST",
+								"url": {
+									"raw": "{{baseUrl}}/onchain/submit",
+									"host": ["{{baseUrl}}"],
+									"path": ["onchain", "submit"]
+								},
+								"header": [
+									{ "key": "Authorization", "value": "Bearer {{token}}" },
+									{ "key": "Content-Type", "value": "application/json" }
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"target\": \"0xINVALID\",\n    \"calldata\": \"0x3593564c\",\n    \"value\": \"0\",\n    \"chain_id\": 8453\n}"
+								}
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"// Invalid Ethereum address should be rejected.",
+											"// Only tested when onchain is enabled.",
+											"",
+											"if (pm.response.code === 400) {",
+											"    const body = pm.response.json();",
+											"    pm.test('Invalid target rejected', () => {",
+											"        pm.expect(body.error).to.be.oneOf(['invalid_target', 'onchain_disabled']);",
+											"    });",
+											"}"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "Submit (invalid calldata hex — 400)",
+							"request": {
+								"method": "POST",
+								"url": {
+									"raw": "{{baseUrl}}/onchain/submit",
+									"host": ["{{baseUrl}}"],
+									"path": ["onchain", "submit"]
+								},
+								"header": [
+									{ "key": "Authorization", "value": "Bearer {{token}}" },
+									{ "key": "Content-Type", "value": "application/json" }
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"target\": \"0x3fC91A3afd70395Cd496C647d5a6CC9D4B2b7FAD\",\n    \"calldata\": \"0x3593564cZZZZinvalidhex\",\n    \"value\": \"0\",\n    \"chain_id\": 8453\n}"
+								}
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"if (pm.response.code === 400) {",
+											"    const body = pm.response.json();",
+											"    pm.test('Invalid calldata rejected', () => {",
+											"        pm.expect(body.error).to.be.oneOf(['invalid_calldata', 'onchain_disabled']);",
+											"    });",
+											"}"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "Submit (invalid value — 400)",
+							"request": {
+								"method": "POST",
+								"url": {
+									"raw": "{{baseUrl}}/onchain/submit",
+									"host": ["{{baseUrl}}"],
+									"path": ["onchain", "submit"]
+								},
+								"header": [
+									{ "key": "Authorization", "value": "Bearer {{token}}" },
+									{ "key": "Content-Type", "value": "application/json" }
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"target\": \"0x3fC91A3afd70395Cd496C647d5a6CC9D4B2b7FAD\",\n    \"calldata\": \"0x3593564c\",\n    \"value\": \"not_a_number\",\n    \"chain_id\": 8453\n}"
+								}
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"if (pm.response.code === 400) {",
+											"    const body = pm.response.json();",
+											"    pm.test('Invalid value rejected', () => {",
+											"        pm.expect(body.error).to.be.oneOf(['invalid_value', 'onchain_disabled']);",
+											"    });",
+											"}"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "Submit (no token — 401)",
+							"request": {
+								"method": "POST",
+								"url": {
+									"raw": "{{baseUrl}}/onchain/submit",
+									"host": ["{{baseUrl}}"],
+									"path": ["onchain", "submit"]
+								},
+								"header": [
+									{ "key": "Content-Type", "value": "application/json" }
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"target\": \"0x3fC91A3afd70395Cd496C647d5a6CC9D4B2b7FAD\",\n    \"calldata\": \"0x3593564c\",\n    \"value\": \"0\",\n    \"chain_id\": 8453\n}"
+								}
+							},
+							"event": [
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"// Override folder-level auto-auth to test 401."
+										]
+									}
+								},
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test('Status 401 Unauthorized', () => pm.response.to.have.status(401));"
+										]
+									}
+								}
+							]
+						}
+					]
+				},
+				{
+					"name": "Stats & Permits",
+					"description": "GET /api/onchain/stats and /api/onchain/permits — view signing statistics and permit history",
+					"item": [
+						{
+							"name": "Get onchain stats",
+							"request": {
+								"method": "GET",
+								"url": {
+									"raw": "{{baseUrl}}/api/onchain/stats",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "onchain", "stats"]
+								},
+								"header": [
+									{ "key": "Authorization", "value": "Bearer {{token}}" }
+								]
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test('Status 200', () => pm.response.to.have.status(200));",
+											"",
+											"pm.test('Returns stats fields', () => {",
+											"    const body = pm.response.json();",
+											"    pm.expect(body).to.have.property('total_permits_signed');",
+											"    pm.expect(body).to.have.property('total_permits_denied');",
+											"    pm.expect(body).to.have.property('spent_today_usd');",
+											"    pm.expect(body).to.have.property('last_permit_at');",
+											"});"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "List permits",
+							"request": {
+								"method": "GET",
+								"url": {
+									"raw": "{{baseUrl}}/api/onchain/permits",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "onchain", "permits"]
+								},
+								"header": [
+									{ "key": "Authorization", "value": "Bearer {{token}}" }
+								]
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test('Status 200', () => pm.response.to.have.status(200));",
+											"",
+											"pm.test('Returns permits array', () => {",
+											"    const body = pm.response.json();",
+											"    pm.expect(body.permits).to.be.an('array');",
+											"});"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "List permits (filter by status)",
+							"request": {
+								"method": "GET",
+								"url": {
+									"raw": "{{baseUrl}}/api/onchain/permits?status=approved",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "onchain", "permits"],
+									"query": [
+										{ "key": "status", "value": "approved" }
+									]
+								},
+								"header": [
+									{ "key": "Authorization", "value": "Bearer {{token}}" }
+								]
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test('Status 200', () => pm.response.to.have.status(200));",
+											"",
+											"pm.test('Returns permits array', () => {",
+											"    const body = pm.response.json();",
+											"    pm.expect(body.permits).to.be.an('array');",
+											"    body.permits.forEach(p => {",
+											"        pm.expect(p.status).to.eql('approved');",
+											"    });",
+											"});"
+										]
+									}
+								}
+							]
+						},
+						{
+							"name": "List permits (custom days)",
+							"request": {
+								"method": "GET",
+								"url": {
+									"raw": "{{baseUrl}}/api/onchain/permits?days=7",
+									"host": ["{{baseUrl}}"],
+									"path": ["api", "onchain", "permits"],
+									"query": [
+										{ "key": "days", "value": "7" }
+									]
+								},
+								"header": [
+									{ "key": "Authorization", "value": "Bearer {{token}}" }
+								]
+							},
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test('Status 200', () => pm.response.to.have.status(200));",
+											"",
+											"pm.test('Returns permits array', () => {",
+											"    const body = pm.response.json();",
+											"    pm.expect(body.permits).to.be.an('array');",
+											"});"
+										]
+									}
+								}
+							]
+						}
+					]
+				}
+			]
+		},
+		{
 			"name": "LLM Proxy",
 			"description": "Reverse proxy to LLM providers — requests pass through rate limiting, drift detection, and size guard checks before reaching the upstream API",
 			"item": [

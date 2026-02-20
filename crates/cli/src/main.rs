@@ -2,16 +2,20 @@ use std::sync::Arc;
 
 use fishnet_server::{
     alert::AlertStore,
-    config::{config_channel, load_config, resolve_config_path},
+    config::{config_channel, resolve_config_path},
     create_router,
     llm_guard::BaselineStore,
+    onchain::OnchainStore,
     password::FilePasswordStore,
     rate_limit::{LoginRateLimiter, ProxyRateLimiter},
     session::SessionStore,
+    signer::SignerTrait,
     spend::SpendStore,
     state::AppState,
     watch::spawn_config_watcher,
 };
+#[cfg(not(feature = "dev-seed"))]
+use fishnet_server::{config::load_config, signer::StubSigner};
 
 #[tokio::main]
 async fn main() {
@@ -20,6 +24,7 @@ async fn main() {
         .map(std::path::PathBuf::from);
     let config_path = resolve_config_path(explicit_config.as_deref());
 
+    #[cfg(not(feature = "dev-seed"))]
     let config = match load_config(config_path.as_deref()) {
         Ok(c) => {
             match &config_path {
@@ -32,6 +37,12 @@ async fn main() {
             eprintln!("[fishnet] fatal: {e}");
             std::process::exit(1);
         }
+    };
+
+    #[cfg(feature = "dev-seed")]
+    let config = {
+        eprintln!("[fishnet] dev-seed: overriding config with dev defaults (anvil chain 31337)");
+        fishnet_server::seed::dev_config()
     };
 
     let load_baselines = !config.llm.prompt_drift.reset_baseline_on_restart;
@@ -66,6 +77,42 @@ async fn main() {
         }
     });
 
+    let alert_store = Arc::new(match AlertStore::default_path() {
+        Some(path) => match AlertStore::open(path.clone()) {
+            Ok(store) => {
+                eprintln!("[fishnet] alerts database opened at {}", path.display());
+                store
+            }
+            Err(e) => {
+                eprintln!("[fishnet] fatal: failed to open alerts database: {e}");
+                std::process::exit(1);
+            }
+        },
+        None => {
+            eprintln!("[fishnet] fatal: could not determine home directory for alerts database");
+            std::process::exit(1);
+        }
+    });
+
+    #[cfg(feature = "dev-seed")]
+    let signer: Arc<dyn SignerTrait> = {
+        let s = fishnet_server::seed::dev_signer();
+        eprintln!(
+            "[fishnet] dev-seed: signer initialized with anvil account #0 (address: {})",
+            s.status().address
+        );
+        Arc::new(s)
+    };
+    #[cfg(not(feature = "dev-seed"))]
+    let signer: Arc<dyn SignerTrait> = {
+        let s = StubSigner::new();
+        eprintln!(
+            "[fishnet] signer initialized (mode: stub-secp256k1, address: {})",
+            s.status().address
+        );
+        Arc::new(s)
+    };
+
     let state = AppState {
         password_store: Arc::new(FilePasswordStore::new(FilePasswordStore::default_path())),
         session_store: Arc::new(SessionStore::new()),
@@ -73,13 +120,22 @@ async fn main() {
         proxy_rate_limiter: Arc::new(ProxyRateLimiter::new()),
         config_rx,
         config_path: config_path_for_state,
-        alert_store: Arc::new(AlertStore::new()),
+        alert_store,
         baseline_store: baseline_store.clone(),
         spend_store,
         http_client: reqwest::Client::new(),
+        onchain_store: Arc::new(OnchainStore::new()),
+        signer,
     };
 
     spawn_baseline_config_watcher(state.config_rx.clone(), baseline_store);
+
+    {
+        let retention_days = state.config().alerts.retention_days;
+        if let Err(e) = state.alert_store.cleanup(retention_days).await {
+            eprintln!("[fishnet] startup alert cleanup failed: {e}");
+        }
+    }
 
     #[cfg(feature = "dev-seed")]
     fishnet_server::seed::run(&state).await;
