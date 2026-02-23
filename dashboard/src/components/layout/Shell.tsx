@@ -2,20 +2,31 @@ import { useState, useCallback } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { useFetch } from "@/hooks/use-fetch";
+import { AlertsProvider, useAlertsContext } from "@/context/alerts-context";
 import { fetchStatus } from "@/api/endpoints/status";
 import { ROUTES } from "@/lib/constants";
 
 const routeTitles: Record<string, string> = {
   [ROUTES.HOME]: "Dashboard",
   [ROUTES.SETTINGS]: "Settings",
+  [ROUTES.ALERTS]: "Alerts",
 };
 
 const routeSubtitles: Record<string, string> = {
   [ROUTES.HOME]: "Overview and control center for your Fishnet instance",
   [ROUTES.SETTINGS]: "User preferences and integrations",
+  [ROUTES.ALERTS]: "Monitor and manage security and budget alerts",
 };
 
 export function Shell() {
+  return (
+    <AlertsProvider>
+      <ShellInner />
+    </AlertsProvider>
+  );
+}
+
+function ShellInner() {
   const [collapsed, setCollapsed] = useState(() => {
     if (typeof window === "undefined") return false;
     return localStorage.getItem("sidebar-collapsed") === "true";
@@ -26,6 +37,7 @@ export function Shell() {
   const subtitle = routeSubtitles[location.pathname];
 
   const { data: status } = useFetch(fetchStatus);
+  const { undismissed } = useAlertsContext();
 
   const handleToggle = useCallback(() => {
     setCollapsed((prev) => {
@@ -42,6 +54,7 @@ export function Shell() {
         onToggle={handleToggle}
         proxyStatus={status?.proxy}
         version={status?.version}
+        alertCount={undismissed.length}
       />
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* Header row */}

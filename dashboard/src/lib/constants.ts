@@ -2,10 +2,12 @@ export const ROUTES = {
   HOME: "/",
   SETTINGS: "/settings",
   LOGIN: "/login",
+  ALERTS: "/alerts",
 } as const;
 
 export const POLLING_INTERVALS = {
   STATUS: 5_000,
+  ALERTS: 30_000,
 } as const;
 
 export const SERVICES = [
@@ -67,3 +69,35 @@ export const SERVICE_GLOW_CLASSES: Record<string, string> = {
 };
 
 export const API_BASE = "/api";
+
+// --- Alert system ---
+import type { AlertType, AlertSeverity } from "@/api/types";
+
+export const ALERT_TYPE_LABELS: Record<AlertType, string> = {
+  prompt_drift: "Prompt Drift",
+  prompt_size: "Prompt Size",
+  budget_warning: "Budget Warning",
+  budget_exceeded: "Budget Exceeded",
+  onchain_denied: "Onchain Denied",
+  rate_limit_hit: "Rate Limit",
+};
+
+export const ALERT_SEVERITY_CONFIG: Record<
+  AlertSeverity,
+  { label: string; textClass: string; bgClass: string; borderClass: string; glowClass: string }
+> = {
+  critical: {
+    label: "Critical",
+    textClass: "text-danger",
+    bgClass: "bg-danger-dim",
+    borderClass: "border-danger/20",
+    glowClass: "danger-glow",
+  },
+  warning: {
+    label: "Warning",
+    textClass: "text-warning",
+    bgClass: "bg-warning-dim",
+    borderClass: "border-warning/20",
+    glowClass: "warning-glow",
+  },
+};

@@ -78,6 +78,75 @@ export interface AuthErrorResponse {
   retry_after_seconds?: number;
 }
 
+// --- Alerts ---
+export type AlertType =
+  | "prompt_drift"
+  | "prompt_size"
+  | "budget_warning"
+  | "budget_exceeded"
+  | "onchain_denied"
+  | "rate_limit_hit";
+
+export type AlertSeverity = "critical" | "warning";
+
+export interface Alert {
+  id: string;
+  type: AlertType;
+  severity: AlertSeverity;
+  service: string;
+  message: string;
+  /** Unix timestamp in seconds */
+  timestamp: number;
+  dismissed: boolean;
+}
+
+export interface AlertsResponse {
+  alerts: Alert[];
+}
+
+export interface DismissAlertResponse {
+  success: boolean;
+}
+
+// --- Alert Query Params ---
+export interface AlertsQueryParams {
+  type?: AlertType;
+  dismissed?: boolean;
+  limit?: number;
+  skip?: number;
+}
+
+// --- Alert Config ---
+export interface AlertConfigToggles {
+  prompt_drift: boolean;
+  prompt_size: boolean;
+  budget_warning: boolean;
+  budget_exceeded: boolean;
+  onchain_denied: boolean;
+  rate_limit_hit: boolean;
+}
+
+export interface AlertConfigResponse {
+  toggles: AlertConfigToggles;
+  retention_days: number;
+}
+
+export interface AlertConfigUpdatePayload {
+  prompt_drift?: boolean;
+  prompt_size?: boolean;
+  budget_warning?: boolean;
+  budget_exceeded?: boolean;
+  onchain_denied?: boolean;
+  rate_limit_hit?: boolean;
+  retention_days?: number;
+}
+
+export interface AlertConfigUpdateResponse {
+  success: boolean;
+  toggles: AlertConfigToggles;
+  retention_days: number;
+}
+
 // --- Generic ---
 export interface ApiError {
   error: string;
