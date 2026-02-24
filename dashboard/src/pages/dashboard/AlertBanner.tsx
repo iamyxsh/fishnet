@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { AlertTriangle, XCircle, ArrowRight } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { timeAgoUnix } from "@/lib/format";
 import { ROUTES, ALERT_TYPE_LABELS, ALERT_SEVERITY_CONFIG } from "@/lib/constants";
@@ -25,12 +25,13 @@ export function AlertBanner({ alert, totalActive, onDismiss }: AlertBannerProps)
         config.glowClass,
       )}
     >
-      {/* Icon */}
-      {isCritical ? (
-        <XCircle size={18} className="mt-0.5 shrink-0 text-danger" />
-      ) : (
-        <AlertTriangle size={18} className="mt-0.5 shrink-0 text-warning" />
-      )}
+      {/* Severity dot */}
+      <span
+        className={cn(
+          "mt-2 inline-block h-2 w-2 shrink-0 rounded-full",
+          isCritical ? "bg-danger shadow-[0_0_6px_rgba(239,68,68,0.5)]" : "bg-warning shadow-[0_0_6px_rgba(245,158,11,0.5)]",
+        )}
+      />
 
       {/* Content */}
       <div className="min-w-0 flex-1">

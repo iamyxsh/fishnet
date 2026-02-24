@@ -67,7 +67,11 @@ export default function AlertsPage() {
     return data.alerts
       .map((a) => (localDismissed.has(a.id) ? { ...a, dismissed: true } : a))
       .filter((a) => severityFilter === "all" || a.severity === severityFilter)
-      .sort((a, b) => b.timestamp - a.timestamp);
+      .sort((a, b) => {
+        // Active alerts first, dismissed at the bottom
+        if (a.dismissed !== b.dismissed) return a.dismissed ? 1 : -1;
+        return b.timestamp - a.timestamp;
+      });
   }, [data, localDismissed, severityFilter]);
 
   const hasNextPage = (data?.alerts.length ?? 0) === PAGE_SIZE;

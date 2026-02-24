@@ -1,4 +1,4 @@
-import { AlertTriangle, XCircle, CheckCircle2 } from "lucide-react";
+import { CheckCircle2 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { timeAgoUnix, formatTimestamp } from "@/lib/format";
 import { ALERT_TYPE_LABELS, ALERT_SEVERITY_CONFIG } from "@/lib/constants";
@@ -47,13 +47,16 @@ export function AlertRow({
         )}
       </td>
 
-      {/* Severity */}
+      {/* Severity dot */}
       <td className="py-3 pr-0">
-        {isCritical ? (
-          <XCircle size={15} className="text-danger" />
-        ) : (
-          <AlertTriangle size={15} className="text-warning" />
-        )}
+        <span
+          className={cn(
+            "inline-block h-2 w-2 rounded-full",
+            isCritical
+              ? "bg-danger shadow-[0_0_6px_rgba(239,68,68,0.5)]"
+              : "bg-warning shadow-[0_0_6px_rgba(245,158,11,0.5)]",
+          )}
+        />
       </td>
 
       {/* Type */}
