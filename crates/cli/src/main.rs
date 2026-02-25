@@ -12,10 +12,15 @@ use fishnet_server::{
     signer::SignerTrait,
     spend::SpendStore,
     state::AppState,
+    vault::CredentialStore,
     watch::spawn_config_watcher,
 };
 #[cfg(not(feature = "dev-seed"))]
 use fishnet_server::{config::load_config, signer::StubSigner};
+#[cfg(target_os = "macos")]
+use security_framework::passwords::{get_generic_password, set_generic_password};
+#[cfg(target_os = "macos")]
+use zeroize::Zeroizing;
 
 #[tokio::main]
 async fn main() {
@@ -58,7 +63,9 @@ async fn main() {
     let baseline_store = Arc::new(match BaselineStore::default_path() {
         Some(path) => BaselineStore::with_persistence(path, load_baselines),
         None => {
-            eprintln!("[fishnet] could not determine home directory, baselines will not be persisted");
+            eprintln!(
+                "[fishnet] could not determine home directory, baselines will not be persisted"
+            );
             BaselineStore::new()
         }
     });
@@ -97,6 +104,23 @@ async fn main() {
         }
     });
 
+    let credential_store = Arc::new(match CredentialStore::default_path() {
+        Some(path) => match open_credential_store(path.clone()) {
+            Ok(store) => {
+                eprintln!("[fishnet] vault database opened at {}", path.display());
+                store
+            }
+            Err(e) => {
+                eprintln!("[fishnet] fatal: failed to open vault database: {e}");
+                std::process::exit(1);
+            }
+        },
+        None => {
+            eprintln!("[fishnet] fatal: could not determine home directory for vault database");
+            std::process::exit(1);
+        }
+    });
+
     #[cfg(feature = "dev-seed")]
     let signer: Arc<dyn SignerTrait> = {
         let s = fishnet_server::seed::dev_signer();
@@ -126,6 +150,8 @@ async fn main() {
         alert_store,
         baseline_store: baseline_store.clone(),
         spend_store,
+        credential_store,
+        binance_order_lock: Arc::new(tokio::sync::Mutex::new(())),
         http_client: reqwest::Client::new(),
         onchain_store: Arc::new(OnchainStore::new()),
         signer,
@@ -185,4 +211,178 @@ fn spawn_baseline_config_watcher(
             }
         }
     });
+}
+
+fn open_credential_store(path: std::path::PathBuf) -> Result<CredentialStore, String> {
+    if let Ok(master_password) =
+        std::env::var(fishnet_server::constants::ENV_FISHNET_MASTER_PASSWORD)
+    {
+        let store = CredentialStore::open(path, &master_password)
+            .map_err(|e| format!("failed to unlock vault with master password: {e}"))?;
+        maybe_store_derived_key_in_keychain(&store);
+        return Ok(store);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        match read_vault_material_from_keychain() {
+            Ok(Some(KeychainVaultMaterial::DerivedKey(derived_key))) => {
+                match CredentialStore::open_with_derived_key(path.clone(), derived_key.as_slice()) {
+                    Ok(store) => {
+                        eprintln!("[fishnet] loaded vault derived key from macOS Keychain");
+                        return Ok(store);
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[fishnet] warning: keychain derived key did not unlock vault: {e}"
+                        );
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!(
+                    "[fishnet] warning: could not load vault key material from keychain: {e}"
+                );
+            }
+        }
+    }
+
+    Err(format!(
+        "{} is not set and no usable keychain vault key was found",
+        fishnet_server::constants::ENV_FISHNET_MASTER_PASSWORD
+    ))
+}
+
+#[cfg(target_os = "macos")]
+const KEYCHAIN_DERIVED_KEY_PREFIX: &str = "derived_hex:v1:";
+
+#[cfg(target_os = "macos")]
+enum KeychainVaultMaterial {
+    DerivedKey(Zeroizing<Vec<u8>>),
+}
+
+#[cfg(target_os = "macos")]
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name).ok().is_some_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn keychain_service_account() -> (String, String) {
+    let service = std::env::var(fishnet_server::constants::ENV_FISHNET_KEYCHAIN_SERVICE)
+        .unwrap_or_else(|_| "fishnet".to_string());
+    let account = std::env::var(fishnet_server::constants::ENV_FISHNET_KEYCHAIN_ACCOUNT)
+        .unwrap_or_else(|_| "vault_derived_key".to_string());
+    (service, account)
+}
+
+#[cfg(target_os = "macos")]
+fn maybe_store_derived_key_in_keychain(store: &CredentialStore) {
+    let allow_store =
+        env_flag_enabled(fishnet_server::constants::ENV_FISHNET_STORE_DERIVED_KEY_IN_KEYCHAIN);
+    if !allow_store {
+        return;
+    }
+
+    let wrapped = format!("{KEYCHAIN_DERIVED_KEY_PREFIX}{}", store.derived_key_hex());
+    match store_keychain_value(&wrapped) {
+        Ok(()) => {
+            eprintln!("[fishnet] vault derived key stored in macOS Keychain");
+        }
+        Err(e) => {
+            eprintln!("[fishnet] warning: failed to store vault derived key in keychain: {e}");
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn maybe_store_derived_key_in_keychain(_store: &CredentialStore) {}
+
+#[cfg(target_os = "macos")]
+fn read_vault_material_from_keychain() -> Result<Option<KeychainVaultMaterial>, String> {
+    let Some(value) = read_keychain_value()? else {
+        return Ok(None);
+    };
+    parse_keychain_material(value).map(Some)
+}
+
+#[cfg(target_os = "macos")]
+fn parse_keychain_material(value: String) -> Result<KeychainVaultMaterial, String> {
+    if let Some(hex_key) = value.strip_prefix(KEYCHAIN_DERIVED_KEY_PREFIX) {
+        let decoded = hex::decode(hex_key)
+            .map_err(|e| format!("invalid derived key encoding in keychain: {e}"))?;
+        return Ok(KeychainVaultMaterial::DerivedKey(Zeroizing::new(decoded)));
+    }
+    Err("unsupported keychain value format; expected derived_hex:v1:<hex>".to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn read_keychain_value() -> Result<Option<String>, String> {
+    let (service, account) = keychain_service_account();
+    match get_generic_password(&service, &account) {
+        Ok(bytes) => {
+            let value = String::from_utf8(bytes)
+                .map_err(|e| format!("invalid UTF-8 from keychain: {e}"))?;
+            if value.is_empty() {
+                return Ok(None);
+            }
+            Ok(Some(value))
+        }
+        Err(e) => {
+            // errSecItemNotFound
+            if e.code() == -25300 {
+                return Ok(None);
+            }
+            Err(format!("failed to read macOS keychain item: {e}"))
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn store_keychain_value(value: &str) -> Result<(), String> {
+    let (service, account) = keychain_service_account();
+    set_generic_password(&service, &account, value.as_bytes())
+        .map_err(|e| format!("failed to write macOS keychain item: {e}"))
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_keychain_material_derived_key_roundtrip() {
+        let raw = vec![0xAB, 0xCD, 0xEF, 0x01];
+        let wrapped = format!("{KEYCHAIN_DERIVED_KEY_PREFIX}{}", hex::encode(&raw));
+        let parsed = parse_keychain_material(wrapped).unwrap();
+        match parsed {
+            KeychainVaultMaterial::DerivedKey(bytes) => {
+                assert_eq!(bytes.as_slice(), raw.as_slice())
+            }
+        }
+    }
+
+    #[test]
+    fn parse_keychain_material_invalid_hex_rejected() {
+        let wrapped = format!("{KEYCHAIN_DERIVED_KEY_PREFIX}not-hex-data");
+        let err = match parse_keychain_material(wrapped) {
+            Ok(_) => panic!("expected invalid derived key encoding error"),
+            Err(e) => e,
+        };
+        assert!(err.contains("invalid derived key encoding"));
+    }
+
+    #[test]
+    fn parse_keychain_material_legacy_value_rejected() {
+        let legacy = "legacy-master-password".to_string();
+        let err = match parse_keychain_material(legacy) {
+            Ok(_) => panic!("expected unsupported keychain value format error"),
+            Err(e) => e,
+        };
+        assert!(err.contains("unsupported keychain value format"));
+    }
 }

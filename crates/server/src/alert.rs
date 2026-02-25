@@ -2,11 +2,11 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::Json;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
 use crate::constants;
@@ -167,7 +167,7 @@ impl AlertStore {
         .await??;
 
         Ok(Alert {
-            id: format!("alert_{:03}", rowid),
+            id: format!("alert_{rowid:03}"),
             alert_type,
             severity,
             service,
@@ -191,7 +191,7 @@ impl AlertStore {
                 let severity_str: String = row.get(2)?;
                 let dismissed_int: i64 = row.get(6)?;
                 Ok(Alert {
-                    id: format!("alert_{:03}", rowid),
+                    id: format!("alert_{rowid:03}"),
                     alert_type: str_to_alert_type(&type_str),
                     severity: str_to_severity(&severity_str),
                     service: row.get(3)?,
@@ -215,10 +215,7 @@ impl AlertStore {
             .unwrap_or(true)
     }
 
-    async fn should_create_onchain_alert_inner(
-        &self,
-        message: &str,
-    ) -> Result<bool, AlertError> {
+    async fn should_create_onchain_alert_inner(&self, message: &str) -> Result<bool, AlertError> {
         let conn = self.conn.clone();
         let message = message.to_string();
         let one_hour_ago = chrono::Utc::now().timestamp() - 3600;
@@ -261,10 +258,7 @@ impl AlertStore {
         let cutoff = now - (retention_days as i64 * 24 * 60 * 60);
         tokio::task::spawn_blocking(move || -> Result<(), AlertError> {
             let conn = conn.lock().unwrap();
-            conn.execute(
-                "DELETE FROM alerts WHERE timestamp < ?1",
-                params![cutoff],
-            )?;
+            conn.execute("DELETE FROM alerts WHERE timestamp < ?1", params![cutoff])?;
             Ok(())
         })
         .await??;

@@ -1,8 +1,8 @@
 use async_trait::async_trait;
+use axum::Json;
 use axum::extract::State;
 use axum::response::IntoResponse;
-use axum::Json;
-use k256::ecdsa::{SigningKey, RecoveryId, signature::hazmat::PrehashSigner};
+use k256::ecdsa::{RecoveryId, SigningKey, signature::hazmat::PrehashSigner};
 use serde::Serialize;
 use sha3::{Digest, Keccak256};
 
@@ -57,8 +57,8 @@ impl StubSigner {
     }
 
     pub fn from_bytes(secret_bytes: [u8; 32]) -> Self {
-        let signing_key = SigningKey::from_bytes((&secret_bytes).into())
-            .expect("valid 32-byte key");
+        let signing_key =
+            SigningKey::from_bytes((&secret_bytes).into()).expect("valid 32-byte key");
         let verifying_key = signing_key.verifying_key();
         let public_key_bytes = verifying_key.to_encoded_point(false);
         let hash = Keccak256::digest(&public_key_bytes.as_bytes()[1..]);
@@ -71,9 +71,8 @@ impl StubSigner {
     }
 
     fn eip712_hash(&self, permit: &FishnetPermit) -> [u8; 32] {
-
         let domain_type_hash = Keccak256::digest(
-            b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+            b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)",
         );
         let name_hash = Keccak256::digest(b"FishnetPermit");
         let version_hash = Keccak256::digest(b"1");
@@ -88,7 +87,10 @@ impl StubSigner {
         domain_data.extend_from_slice(&chain_id_bytes);
 
         let vc_bytes = hex::decode(
-            permit.verifying_contract.strip_prefix("0x").unwrap_or(&permit.verifying_contract),
+            permit
+                .verifying_contract
+                .strip_prefix("0x")
+                .unwrap_or(&permit.verifying_contract),
         )
         .unwrap_or_default();
         let mut vc_padded = [0u8; 32];
@@ -98,7 +100,6 @@ impl StubSigner {
         domain_data.extend_from_slice(&vc_padded);
         let domain_separator = Keccak256::digest(&domain_data);
 
-
         let permit_type_hash = Keccak256::digest(
             b"FishnetPermit(address wallet,uint256 chainId,uint256 nonce,uint256 expiry,address target,uint256 value,bytes32 calldataHash,bytes32 policyHash)"
         );
@@ -106,48 +107,48 @@ impl StubSigner {
         let mut struct_data = Vec::new();
         struct_data.extend_from_slice(&permit_type_hash);
 
-
-        let wallet_bytes = hex::decode(permit.wallet.strip_prefix("0x").unwrap_or(&permit.wallet)).unwrap_or_default();
+        let wallet_bytes = hex::decode(permit.wallet.strip_prefix("0x").unwrap_or(&permit.wallet))
+            .unwrap_or_default();
         let mut wallet_padded = [0u8; 32];
         if wallet_bytes.len() <= 32 {
             wallet_padded[32 - wallet_bytes.len()..].copy_from_slice(&wallet_bytes);
         }
         struct_data.extend_from_slice(&wallet_padded);
 
-
         struct_data.extend_from_slice(&chain_id_bytes);
-
 
         let mut nonce_bytes = [0u8; 32];
         nonce_bytes[24..].copy_from_slice(&permit.nonce.to_be_bytes());
         struct_data.extend_from_slice(&nonce_bytes);
 
-
         let mut expiry_bytes = [0u8; 32];
         expiry_bytes[24..].copy_from_slice(&permit.expiry.to_be_bytes());
         struct_data.extend_from_slice(&expiry_bytes);
 
-
-        let target_bytes = hex::decode(permit.target.strip_prefix("0x").unwrap_or(&permit.target)).unwrap_or_default();
+        let target_bytes = hex::decode(permit.target.strip_prefix("0x").unwrap_or(&permit.target))
+            .unwrap_or_default();
         let mut target_padded = [0u8; 32];
         if target_bytes.len() <= 32 {
             target_padded[32 - target_bytes.len()..].copy_from_slice(&target_bytes);
         }
         struct_data.extend_from_slice(&target_padded);
 
-
         let value_u256 = alloy_primitives::U256::from_str_radix(&permit.value, 10)
             .unwrap_or(alloy_primitives::U256::ZERO);
         struct_data.extend_from_slice(&value_u256.to_be_bytes::<32>());
 
-
-        let calldata_hash_bytes = hex::decode(permit.calldata_hash.strip_prefix("0x").unwrap_or(&permit.calldata_hash)).unwrap_or_default();
+        let calldata_hash_bytes = hex::decode(
+            permit
+                .calldata_hash
+                .strip_prefix("0x")
+                .unwrap_or(&permit.calldata_hash),
+        )
+        .unwrap_or_default();
         let mut calldata_padded = [0u8; 32];
         if calldata_hash_bytes.len() == 32 {
             calldata_padded.copy_from_slice(&calldata_hash_bytes);
         }
         struct_data.extend_from_slice(&calldata_padded);
-
 
         let policy_padded = match &permit.policy_hash {
             Some(ph) => {
@@ -163,7 +164,6 @@ impl StubSigner {
         struct_data.extend_from_slice(&policy_padded);
 
         let struct_hash = Keccak256::digest(&struct_data);
-
 
         let mut final_data = Vec::with_capacity(66);
         final_data.push(0x19);
@@ -186,7 +186,6 @@ impl SignerTrait for StubSigner {
             .signing_key
             .sign_prehash(&hash)
             .map_err(|e| SignerError::SigningFailed(e.to_string()))?;
-
 
         let mut sig_bytes = Vec::with_capacity(65);
         sig_bytes.extend_from_slice(&signature.to_bytes());

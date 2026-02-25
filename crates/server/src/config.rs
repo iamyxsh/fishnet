@@ -35,11 +35,6 @@ pub fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
         return Some(path.to_path_buf());
     }
 
-    let cwd_config = PathBuf::from(constants::CONFIG_FILE);
-    if cwd_config.exists() {
-        return Some(cwd_config);
-    }
-
     if let Some(mut home_config) = dirs::home_dir() {
         home_config.push(constants::FISHNET_DIR);
         home_config.push(constants::CONFIG_FILE);
@@ -77,11 +72,10 @@ pub fn config_channel(
 }
 
 pub fn save_config(path: &Path, config: &FishnetConfig) -> Result<(), ConfigError> {
-    let toml_string =
-        toml::to_string_pretty(config).map_err(|e| ConfigError::Serialize {
-            path: path.to_path_buf(),
-            source: e,
-        })?;
+    let toml_string = toml::to_string_pretty(config).map_err(|e| ConfigError::Serialize {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| ConfigError::Read {

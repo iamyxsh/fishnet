@@ -9,6 +9,8 @@ pub struct FishnetConfig {
     pub dashboard: DashboardConfig,
     pub alerts: AlertsConfig,
     pub onchain: OnchainConfig,
+    pub binance: BinanceConfig,
+    pub custom: HashMap<String, CustomServiceConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,6 +167,54 @@ impl Default for OnchainPermits {
             expiry_seconds: 300,
             require_policy_hash: true,
             verifying_contract: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BinanceConfig {
+    pub enabled: bool,
+    pub base_url: String,
+    pub max_order_value_usd: f64,
+    pub daily_volume_cap_usd: f64,
+    pub allow_delete_open_orders: bool,
+    pub recv_window_ms: u64,
+}
+
+impl Default for BinanceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            base_url: "https://api.binance.com".to_string(),
+            max_order_value_usd: 500.0,
+            daily_volume_cap_usd: 2_500.0,
+            allow_delete_open_orders: false,
+            recv_window_ms: 5_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CustomServiceConfig {
+    pub base_url: String,
+    pub auth_header: String,
+    pub auth_value_prefix: String,
+    pub blocked_endpoints: Vec<String>,
+    pub rate_limit: u32,
+    pub rate_limit_window_seconds: u64,
+}
+
+impl Default for CustomServiceConfig {
+    fn default() -> Self {
+        Self {
+            base_url: String::new(),
+            auth_header: "Authorization".to_string(),
+            auth_value_prefix: "Bearer ".to_string(),
+            blocked_endpoints: Vec::new(),
+            rate_limit: 100,
+            rate_limit_window_seconds: 3600,
         }
     }
 }

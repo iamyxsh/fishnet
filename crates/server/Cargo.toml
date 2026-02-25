@@ -30,6 +30,14 @@ k256.workspace = true
 alloy-primitives.workspace = true
 hex.workspace = true
 async-trait.workspace = true
+argon2.workspace = true
+sodiumoxide.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+libc.workspace = true
+hmac.workspace = true
+url.workspace = true
+rust_decimal.workspace = true
 rust-embed = { workspace = true, optional = true }
 mime_guess = { workspace = true, optional = true }
 
@@ -37,3 +45,4 @@ mime_guess = { workspace = true, optional = true }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 tempfile = "3"
+static_assertions = "1"

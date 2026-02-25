@@ -1,9 +1,9 @@
 use std::sync::atomic::{AtomicI64, Ordering};
 
+use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::Json;
 use serde::Deserialize;
 use sha3::{Digest, Keccak256};
 use tokio::sync::Mutex;
@@ -67,9 +67,10 @@ fn check_policy(
     }
 
     let target_lower = req.target.to_lowercase();
-    let whitelist_entry = config.whitelist.iter().find(|(addr, _)| {
-        addr.to_lowercase() == target_lower
-    });
+    let whitelist_entry = config
+        .whitelist
+        .iter()
+        .find(|(addr, _)| addr.to_lowercase() == target_lower);
 
     let allowed_selectors = match whitelist_entry {
         Some((_, selectors)) => selectors,
@@ -224,19 +225,26 @@ pub async fn submit_handler(
     if let Err(denial) = check_policy(&req, &config.onchain, onchain_spent_today, last_permit_at) {
         drop(_submit_guard);
 
-        let _ = state.spend_store.record_permit(&crate::spend::PermitEntry {
-            chain_id: req.chain_id,
-            target: &req.target,
-            value: &req.value,
-            status: "denied",
-            reason: Some(&denial.reason),
-            permit_hash: None,
-            cost_usd: 0.0,
-        }).await;
+        let _ = state
+            .spend_store
+            .record_permit(&crate::spend::PermitEntry {
+                chain_id: req.chain_id,
+                target: &req.target,
+                value: &req.value,
+                status: "denied",
+                reason: Some(&denial.reason),
+                permit_hash: None,
+                cost_usd: 0.0,
+            })
+            .await;
 
         if config.alerts.onchain_denied {
             let alert_msg = format!("Denied tx to {}: {}", req.target, denial.reason);
-            if state.alert_store.should_create_onchain_alert(&alert_msg).await {
+            if state
+                .alert_store
+                .should_create_onchain_alert(&alert_msg)
+                .await
+            {
                 if let Err(e) = state
                     .alert_store
                     .create(
@@ -266,7 +274,10 @@ pub async fn submit_handler(
     }
 
     let signer_info = state.signer.status();
-    let wallet_hex = signer_info.address.strip_prefix("0x").unwrap_or(&signer_info.address);
+    let wallet_hex = signer_info
+        .address
+        .strip_prefix("0x")
+        .unwrap_or(&signer_info.address);
     let nonce = match state.spend_store.next_nonce().await {
         Ok(n) => n,
         Err(e) => {
@@ -284,9 +295,8 @@ pub async fn submit_handler(
     let now = chrono::Utc::now().timestamp() as u64;
     let expiry = now + config.onchain.permits.expiry_seconds;
 
-    let calldata_bytes = match hex::decode(
-        req.calldata.strip_prefix("0x").unwrap_or(&req.calldata),
-    ) {
+    let calldata_bytes = match hex::decode(req.calldata.strip_prefix("0x").unwrap_or(&req.calldata))
+    {
         Ok(bytes) => bytes,
         Err(_) => {
             return (
@@ -324,7 +334,7 @@ pub async fn submit_handler(
     };
 
     let permit = FishnetPermit {
-        wallet: format!("0x{}", wallet_hex),
+        wallet: format!("0x{wallet_hex}"),
         chain_id: req.chain_id,
         nonce,
         expiry,
@@ -352,15 +362,18 @@ pub async fn submit_handler(
 
     let permit_hash_str = format!("0x{}", hex::encode(Keccak256::digest(signature.as_bytes())));
     let tx_value: f64 = req.value.parse().unwrap_or(0.0);
-    let _ = state.spend_store.record_permit(&crate::spend::PermitEntry {
-        chain_id: req.chain_id,
-        target: &req.target,
-        value: &req.value,
-        status: "approved",
-        reason: None,
-        permit_hash: Some(&permit_hash_str),
-        cost_usd: tx_value,
-    }).await;
+    let _ = state
+        .spend_store
+        .record_permit(&crate::spend::PermitEntry {
+            chain_id: req.chain_id,
+            target: &req.target,
+            value: &req.value,
+            status: "approved",
+            reason: None,
+            permit_hash: Some(&permit_hash_str),
+            cost_usd: tx_value,
+        })
+        .await;
 
     state
         .onchain_store
@@ -452,7 +465,9 @@ pub async fn update_config(
     if let Some(ref v) = req.verifying_contract {
         let hex = v.strip_prefix("0x").unwrap_or(v);
         if !v.is_empty() && (hex.len() != 40 || !hex.chars().all(|c| c.is_ascii_hexdigit())) {
-            errors.push("verifying_contract must be a valid Ethereum address (0x + 40 hex characters)");
+            errors.push(
+                "verifying_contract must be a valid Ethereum address (0x + 40 hex characters)",
+            );
         }
     }
 

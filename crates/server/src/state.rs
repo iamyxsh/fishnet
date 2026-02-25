@@ -12,6 +12,7 @@ use crate::rate_limit::{LoginRateLimiter, ProxyRateLimiter};
 use crate::session::SessionStore;
 use crate::signer::SignerTrait;
 use crate::spend::SpendStore;
+use crate::vault::CredentialStore;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -24,6 +25,8 @@ pub struct AppState {
     pub alert_store: Arc<AlertStore>,
     pub baseline_store: Arc<BaselineStore>,
     pub spend_store: Arc<SpendStore>,
+    pub credential_store: Arc<CredentialStore>,
+    pub binance_order_lock: Arc<tokio::sync::Mutex<()>>,
     pub http_client: reqwest::Client,
     pub onchain_store: Arc<OnchainStore>,
     pub signer: Arc<dyn SignerTrait>,
