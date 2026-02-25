@@ -9,6 +9,18 @@ pub struct FishnetConfig {
     pub dashboard: DashboardConfig,
     pub alerts: AlertsConfig,
     pub onchain: OnchainConfig,
+    pub binance: BinanceConfig,
+    pub custom: HashMap<String, CustomServiceConfig>,
+}
+
+impl FishnetConfig {
+    pub fn validate(&mut self) -> Result<(), String> {
+        self.binance.validate()?;
+        for (name, service) in &self.custom {
+            service.validate(name)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,6 +178,80 @@ impl Default for OnchainPermits {
             require_policy_hash: true,
             verifying_contract: String::new(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BinanceConfig {
+    pub enabled: bool,
+    pub base_url: String,
+    pub max_order_value_usd: f64,
+    pub daily_volume_cap_usd: f64,
+    pub allow_delete_open_orders: bool,
+    pub recv_window_ms: u64,
+}
+
+impl Default for BinanceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            base_url: "https://api.binance.com".to_string(),
+            max_order_value_usd: 500.0,
+            daily_volume_cap_usd: 2_500.0,
+            allow_delete_open_orders: false,
+            recv_window_ms: 5_000,
+        }
+    }
+}
+
+impl BinanceConfig {
+    pub fn validate(&mut self) -> Result<(), String> {
+        if self.recv_window_ms == 0 {
+            self.recv_window_ms = 5_000;
+        }
+        if self.recv_window_ms > 60_000 {
+            return Err(format!(
+                "binance.recv_window_ms must be <= 60000, got {}",
+                self.recv_window_ms
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CustomServiceConfig {
+    pub base_url: String,
+    pub auth_header: String,
+    pub auth_value_prefix: String,
+    pub blocked_endpoints: Vec<String>,
+    pub rate_limit: u32,
+    pub rate_limit_window_seconds: u64,
+}
+
+impl Default for CustomServiceConfig {
+    fn default() -> Self {
+        Self {
+            base_url: String::new(),
+            auth_header: "Authorization".to_string(),
+            auth_value_prefix: "Bearer ".to_string(),
+            blocked_endpoints: Vec::new(),
+            rate_limit: 100,
+            rate_limit_window_seconds: 3600,
+        }
+    }
+}
+
+impl CustomServiceConfig {
+    pub fn validate(&self, service_name: &str) -> Result<(), String> {
+        if self.base_url.trim().is_empty() {
+            return Err(format!(
+                "custom.{service_name}.base_url must be set and non-empty"
+            ));
+        }
+        Ok(())
     }
 }
 

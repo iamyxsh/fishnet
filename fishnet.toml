@@ -1,0 +1,15 @@
+[binance]
+enabled = true
+base_url = "https://api.binance.com"
+max_order_value_usd = 100.0
+daily_volume_cap_usd = 200.0
+allow_delete_open_orders = false
+recv_window_ms = 5000
+
+[custom.github]
+base_url = "https://api.github.com"
+auth_header = "Authorization"
+auth_value_prefix = "Bearer "
+blocked_endpoints = ["DELETE /repos/*", "PUT /repos/*/admin/*", "DELETE /orgs/*"]
+rate_limit = 2 # Intentionally conservative safety default for local/demo use; tune per workload.
+rate_limit_window_seconds = 60
