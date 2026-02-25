@@ -19,6 +19,8 @@ pub enum ConfigError {
         path: PathBuf,
         source: toml::de::Error,
     },
+    #[error("invalid config in {path}: {message}")]
+    Validation { path: PathBuf, message: String },
     #[error("failed to serialize config to {path}: {source}")]
     Serialize {
         path: PathBuf,
@@ -53,12 +55,29 @@ pub fn load_config(path: Option<&Path>) -> Result<FishnetConfig, ConfigError> {
                 path: path.to_path_buf(),
                 source: e,
             })?;
-            toml::from_str(&content).map_err(|e| ConfigError::Parse {
-                path: path.to_path_buf(),
-                source: e,
-            })
+            let mut config: FishnetConfig =
+                toml::from_str(&content).map_err(|e| ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    source: e,
+                })?;
+            config
+                .validate()
+                .map_err(|message| ConfigError::Validation {
+                    path: path.to_path_buf(),
+                    message,
+                })?;
+            Ok(config)
         }
-        None => Ok(FishnetConfig::default()),
+        None => {
+            let mut config = FishnetConfig::default();
+            config
+                .validate()
+                .map_err(|message| ConfigError::Validation {
+                    path: PathBuf::from("<defaults>"),
+                    message,
+                })?;
+            Ok(config)
+        }
     }
 }
 
@@ -182,6 +201,59 @@ mode = "invalid_mode"
 
         let err = load_config(Some(&path)).unwrap_err();
         assert!(matches!(err, ConfigError::Parse { .. }));
+    }
+
+    #[test]
+    fn load_rejects_recv_window_ms_above_binance_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fishnet.toml");
+        std::fs::write(
+            &path,
+            r#"
+[binance]
+recv_window_ms = 70000
+"#,
+        )
+        .unwrap();
+
+        let err = load_config(Some(&path)).unwrap_err();
+        assert!(matches!(err, ConfigError::Validation { .. }));
+        assert!(err.to_string().contains("recv_window_ms"));
+    }
+
+    #[test]
+    fn load_clamps_recv_window_ms_zero_to_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fishnet.toml");
+        std::fs::write(
+            &path,
+            r#"
+[binance]
+recv_window_ms = 0
+"#,
+        )
+        .unwrap();
+
+        let config = load_config(Some(&path)).unwrap();
+        assert_eq!(config.binance.recv_window_ms, 5_000);
+    }
+
+    #[test]
+    fn load_rejects_custom_service_with_empty_base_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fishnet.toml");
+        std::fs::write(
+            &path,
+            r#"
+[custom.github]
+auth_header = "Authorization"
+"#,
+        )
+        .unwrap();
+
+        let err = load_config(Some(&path)).unwrap_err();
+        assert!(matches!(err, ConfigError::Validation { .. }));
+        assert!(err.to_string().contains("custom.github.base_url"));
     }
 
     #[test]

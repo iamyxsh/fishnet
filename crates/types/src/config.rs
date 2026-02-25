@@ -13,6 +13,16 @@ pub struct FishnetConfig {
     pub custom: HashMap<String, CustomServiceConfig>,
 }
 
+impl FishnetConfig {
+    pub fn validate(&mut self) -> Result<(), String> {
+        self.binance.validate()?;
+        for (name, service) in &self.custom {
+            service.validate(name)?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LlmConfig {
@@ -195,6 +205,21 @@ impl Default for BinanceConfig {
     }
 }
 
+impl BinanceConfig {
+    pub fn validate(&mut self) -> Result<(), String> {
+        if self.recv_window_ms == 0 {
+            self.recv_window_ms = 5_000;
+        }
+        if self.recv_window_ms > 60_000 {
+            return Err(format!(
+                "binance.recv_window_ms must be <= 60000, got {}",
+                self.recv_window_ms
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CustomServiceConfig {
@@ -216,6 +241,17 @@ impl Default for CustomServiceConfig {
             rate_limit: 100,
             rate_limit_window_seconds: 3600,
         }
+    }
+}
+
+impl CustomServiceConfig {
+    pub fn validate(&self, service_name: &str) -> Result<(), String> {
+        if self.base_url.trim().is_empty() {
+            return Err(format!(
+                "custom.{service_name}.base_url must be set and non-empty"
+            ));
+        }
+        Ok(())
     }
 }
 

@@ -31,6 +31,8 @@ pub struct FishnetPermit {
 pub enum SignerError {
     #[error("signing failed: {0}")]
     SigningFailed(String),
+    #[error("invalid hex for {field}: {reason}")]
+    HexDecode { field: &'static str, reason: String },
 }
 
 #[async_trait]
@@ -70,7 +72,14 @@ impl StubSigner {
         }
     }
 
-    fn eip712_hash(&self, permit: &FishnetPermit) -> [u8; 32] {
+    fn decode_hex_field(value: &str, field: &'static str) -> Result<Vec<u8>, SignerError> {
+        hex::decode(value.strip_prefix("0x").unwrap_or(value)).map_err(|e| SignerError::HexDecode {
+            field,
+            reason: e.to_string(),
+        })
+    }
+
+    fn eip712_hash(&self, permit: &FishnetPermit) -> Result<[u8; 32], SignerError> {
         let domain_type_hash = Keccak256::digest(
             b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)",
         );
@@ -86,13 +95,7 @@ impl StubSigner {
         chain_id_bytes[24..].copy_from_slice(&permit.chain_id.to_be_bytes());
         domain_data.extend_from_slice(&chain_id_bytes);
 
-        let vc_bytes = hex::decode(
-            permit
-                .verifying_contract
-                .strip_prefix("0x")
-                .unwrap_or(&permit.verifying_contract),
-        )
-        .unwrap_or_default();
+        let vc_bytes = Self::decode_hex_field(&permit.verifying_contract, "verifying_contract")?;
         let mut vc_padded = [0u8; 32];
         if vc_bytes.len() <= 32 {
             vc_padded[32 - vc_bytes.len()..].copy_from_slice(&vc_bytes);
@@ -107,8 +110,7 @@ impl StubSigner {
         let mut struct_data = Vec::new();
         struct_data.extend_from_slice(&permit_type_hash);
 
-        let wallet_bytes = hex::decode(permit.wallet.strip_prefix("0x").unwrap_or(&permit.wallet))
-            .unwrap_or_default();
+        let wallet_bytes = Self::decode_hex_field(&permit.wallet, "wallet")?;
         let mut wallet_padded = [0u8; 32];
         if wallet_bytes.len() <= 32 {
             wallet_padded[32 - wallet_bytes.len()..].copy_from_slice(&wallet_bytes);
@@ -125,8 +127,7 @@ impl StubSigner {
         expiry_bytes[24..].copy_from_slice(&permit.expiry.to_be_bytes());
         struct_data.extend_from_slice(&expiry_bytes);
 
-        let target_bytes = hex::decode(permit.target.strip_prefix("0x").unwrap_or(&permit.target))
-            .unwrap_or_default();
+        let target_bytes = Self::decode_hex_field(&permit.target, "target")?;
         let mut target_padded = [0u8; 32];
         if target_bytes.len() <= 32 {
             target_padded[32 - target_bytes.len()..].copy_from_slice(&target_bytes);
@@ -137,13 +138,7 @@ impl StubSigner {
             .unwrap_or(alloy_primitives::U256::ZERO);
         struct_data.extend_from_slice(&value_u256.to_be_bytes::<32>());
 
-        let calldata_hash_bytes = hex::decode(
-            permit
-                .calldata_hash
-                .strip_prefix("0x")
-                .unwrap_or(&permit.calldata_hash),
-        )
-        .unwrap_or_default();
+        let calldata_hash_bytes = Self::decode_hex_field(&permit.calldata_hash, "calldata_hash")?;
         let mut calldata_padded = [0u8; 32];
         if calldata_hash_bytes.len() == 32 {
             calldata_padded.copy_from_slice(&calldata_hash_bytes);
@@ -152,7 +147,7 @@ impl StubSigner {
 
         let policy_padded = match &permit.policy_hash {
             Some(ph) => {
-                let ph_bytes = hex::decode(ph.strip_prefix("0x").unwrap_or(ph)).unwrap_or_default();
+                let ph_bytes = Self::decode_hex_field(ph, "policy_hash")?;
                 let mut padded = [0u8; 32];
                 if ph_bytes.len() == 32 {
                     padded.copy_from_slice(&ph_bytes);
@@ -174,14 +169,14 @@ impl StubSigner {
         let result = Keccak256::digest(&final_data);
         let mut hash = [0u8; 32];
         hash.copy_from_slice(&result);
-        hash
+        Ok(hash)
     }
 }
 
 #[async_trait]
 impl SignerTrait for StubSigner {
     async fn sign_permit(&self, permit: &FishnetPermit) -> Result<Vec<u8>, SignerError> {
-        let hash = self.eip712_hash(permit);
+        let hash = self.eip712_hash(permit)?;
         let (signature, recovery_id): (k256::ecdsa::Signature, RecoveryId) = self
             .signing_key
             .sign_prehash(&hash)
@@ -241,4 +236,47 @@ pub async fn status_handler(State(state): State<AppState>) -> impl IntoResponse 
             "last_permit_at": stats.last_permit_at,
         },
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_permit() -> FishnetPermit {
+        FishnetPermit {
+            wallet: "0x1111111111111111111111111111111111111111".to_string(),
+            chain_id: 1,
+            nonce: 1,
+            expiry: 1_700_000_000,
+            target: "0x2222222222222222222222222222222222222222".to_string(),
+            value: "1".to_string(),
+            calldata_hash: format!("0x{}", "aa".repeat(32)),
+            policy_hash: Some(format!("0x{}", "bb".repeat(32))),
+            verifying_contract: "0x3333333333333333333333333333333333333333".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn sign_permit_rejects_invalid_wallet_hex() {
+        let signer = StubSigner::new();
+        let mut permit = sample_permit();
+        permit.wallet = "0xnothex".to_string();
+        let err = signer.sign_permit(&permit).await.unwrap_err();
+        match err {
+            SignerError::HexDecode { field, .. } => assert_eq!(field, "wallet"),
+            _ => panic!("expected hex decode error for wallet"),
+        }
+    }
+
+    #[tokio::test]
+    async fn sign_permit_rejects_invalid_calldata_hash_hex() {
+        let signer = StubSigner::new();
+        let mut permit = sample_permit();
+        permit.calldata_hash = "0xzz".to_string();
+        let err = signer.sign_permit(&permit).await.unwrap_err();
+        match err {
+            SignerError::HexDecode { field, .. } => assert_eq!(field, "calldata_hash"),
+            _ => panic!("expected hex decode error for calldata_hash"),
+        }
+    }
 }

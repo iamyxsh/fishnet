@@ -6,9 +6,9 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use libsodium_sys as sodium;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use sodiumoxide::crypto::secretbox;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::constants;
@@ -17,7 +17,9 @@ use crate::state::AppState;
 const ARGON2_MEMORY_COST_KIB: u32 = 262_144;
 const ARGON2_TIME_COST: u32 = 3;
 const ARGON2_PARALLELISM: u32 = 1;
-const DERIVED_KEY_LEN: usize = secretbox::KEYBYTES;
+const DERIVED_KEY_LEN: usize = 32;
+const NONCE_LEN: usize = 24;
+const SECRETBOX_MAC_BYTES: usize = sodium::crypto_secretbox_MACBYTES as usize;
 const SALT_LEN: usize = 16;
 const META_SALT_KEY: &str = "salt";
 const META_CANARY_KEY: &str = "canary";
@@ -35,10 +37,14 @@ pub enum VaultError {
     Argon2Params(String),
     #[error("argon2 derivation failed: {0}")]
     Argon2Derive(String),
-    #[error("sodium initialization failed")]
+    #[error("libsodium initialization failed")]
     SodiumInit,
     #[error("invalid master password")]
     InvalidMasterPassword,
+    #[error("credential decryption failed")]
+    DecryptionFailed,
+    #[error("credential encryption failed")]
+    EncryptionFailed,
     #[error("vault metadata salt has invalid length: expected {expected}, found {found}")]
     InvalidSaltLength { expected: usize, found: usize },
     #[error("invalid nonce length")]
@@ -54,24 +60,26 @@ pub enum VaultError {
 }
 
 struct LockedSecretboxKey {
-    key: secretbox::Key,
+    key: [u8; DERIVED_KEY_LEN],
     locked: bool,
 }
 
 impl LockedSecretboxKey {
     fn from_bytes(derived_key: &[u8], require_mlock: bool) -> Result<Self, VaultError> {
-        let Some(key) = secretbox::Key::from_slice(derived_key) else {
+        if derived_key.len() != DERIVED_KEY_LEN {
             return Err(VaultError::InvalidDerivedKey);
-        };
+        }
+        let mut key = [0u8; DERIVED_KEY_LEN];
+        key.copy_from_slice(derived_key);
         Self::new(key, require_mlock)
     }
 
-    fn new(mut key: secretbox::Key, require_mlock: bool) -> Result<Self, VaultError> {
-        let rc = unsafe { libc::mlock(key.0.as_ptr().cast(), key.0.len()) };
+    fn new(mut key: [u8; DERIVED_KEY_LEN], require_mlock: bool) -> Result<Self, VaultError> {
+        let rc = unsafe { libc::mlock(key.as_ptr().cast(), key.len()) };
         if rc != 0 {
             let err = std::io::Error::last_os_error().to_string();
             if require_mlock {
-                key.0.zeroize();
+                key.zeroize();
                 return Err(VaultError::MlockFailed(err));
             }
             eprintln!(
@@ -83,12 +91,12 @@ impl LockedSecretboxKey {
         Ok(Self { key, locked: true })
     }
 
-    fn as_secretbox_key(&self) -> &secretbox::Key {
+    fn as_array(&self) -> &[u8; DERIVED_KEY_LEN] {
         &self.key
     }
 
     fn as_bytes(&self) -> &[u8] {
-        self.key.as_ref()
+        &self.key
     }
 }
 
@@ -96,10 +104,10 @@ impl Drop for LockedSecretboxKey {
     fn drop(&mut self) {
         if self.locked {
             unsafe {
-                libc::munlock(self.key.0.as_ptr().cast(), self.key.0.len());
+                libc::munlock(self.key.as_ptr().cast(), self.key.len());
             }
         }
-        self.key.0.zeroize();
+        self.key.zeroize();
     }
 }
 
@@ -114,8 +122,8 @@ impl MasterKey {
         })
     }
 
-    fn secretbox_key(&self) -> &secretbox::Key {
-        self.locked_key.as_secretbox_key()
+    fn key_array(&self) -> &[u8; DERIVED_KEY_LEN] {
+        self.locked_key.as_array()
     }
 
     fn derived_key_hex(&self) -> String {
@@ -153,9 +161,10 @@ pub struct CreateCredentialRequest {
 impl CredentialStore {
     pub fn open(path: PathBuf, master_password: &str) -> Result<Self, VaultError> {
         let conn = Self::open_sqlite(&path)?;
+        let key = Arc::new(Self::load_master_key(master_password, &path)?);
         let store = Self {
             conn: Arc::new(Mutex::new(conn)),
-            key: Arc::new(Self::load_master_key(master_password, &path)?),
+            key,
         };
         store.migrate()?;
         Ok(store)
@@ -163,9 +172,10 @@ impl CredentialStore {
 
     pub fn open_with_derived_key(path: PathBuf, derived_key: &[u8]) -> Result<Self, VaultError> {
         let conn = Self::open_sqlite(&path)?;
+        let key = Arc::new(Self::load_master_key_from_derived(&path, derived_key)?);
         let store = Self {
             conn: Arc::new(Mutex::new(conn)),
-            key: Arc::new(Self::load_master_key_from_derived(&path, derived_key)?),
+            key,
         };
         store.migrate()?;
         Ok(store)
@@ -173,9 +183,7 @@ impl CredentialStore {
 
     #[cfg(test)]
     pub fn open_in_memory(master_password: &str) -> Result<Self, VaultError> {
-        if sodiumoxide::init().is_err() {
-            return Err(VaultError::SodiumInit);
-        }
+        Self::ensure_sodium_init()?;
         let conn = Connection::open_in_memory()?;
         let store = Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -231,7 +239,7 @@ impl CredentialStore {
 
         let salt = Self::load_or_create_salt(&conn)?;
         let key = Self::derive_secretbox_key(master_password, &salt)?;
-        Self::validate_or_create_canary(&conn, key.secretbox_key())?;
+        Self::validate_or_create_canary(&conn, &key)?;
         Ok(key)
     }
 
@@ -247,7 +255,7 @@ impl CredentialStore {
             );",
         )?;
         let key = Self::master_key_from_derived(derived_key)?;
-        Self::validate_or_create_canary(&conn, key.secretbox_key())?;
+        Self::validate_or_create_canary(&conn, &key)?;
         Ok(key)
     }
 
@@ -265,9 +273,7 @@ impl CredentialStore {
     }
 
     fn open_sqlite(path: &StdPath) -> Result<Connection, VaultError> {
-        if sodiumoxide::init().is_err() {
-            return Err(VaultError::SodiumInit);
-        }
+        Self::ensure_sodium_init()?;
 
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -294,6 +300,68 @@ impl CredentialStore {
         }
 
         Ok(conn)
+    }
+
+    fn ensure_sodium_init() -> Result<(), VaultError> {
+        let rc = unsafe { sodium::sodium_init() };
+        if rc < 0 {
+            return Err(VaultError::SodiumInit);
+        }
+        Ok(())
+    }
+
+    fn generate_nonce() -> [u8; NONCE_LEN] {
+        let mut nonce = [0u8; NONCE_LEN];
+        unsafe {
+            sodium::randombytes_buf(nonce.as_mut_ptr().cast(), NONCE_LEN);
+        }
+        nonce
+    }
+
+    fn encrypt_with_key(
+        key: &[u8; DERIVED_KEY_LEN],
+        plaintext: &[u8],
+    ) -> Result<(Vec<u8>, [u8; NONCE_LEN]), VaultError> {
+        let nonce = Self::generate_nonce();
+        let mut ciphertext = vec![0u8; plaintext.len() + SECRETBOX_MAC_BYTES];
+        let rc = unsafe {
+            sodium::crypto_secretbox_easy(
+                ciphertext.as_mut_ptr(),
+                plaintext.as_ptr(),
+                plaintext.len() as libc::c_ulonglong,
+                nonce.as_ptr(),
+                key.as_ptr(),
+            )
+        };
+        if rc != 0 {
+            return Err(VaultError::EncryptionFailed);
+        }
+        Ok((ciphertext, nonce))
+    }
+
+    fn decrypt_with_key(
+        key: &[u8; DERIVED_KEY_LEN],
+        nonce: &[u8; NONCE_LEN],
+        ciphertext: &[u8],
+    ) -> Result<Vec<u8>, VaultError> {
+        if ciphertext.len() < SECRETBOX_MAC_BYTES {
+            return Err(VaultError::DecryptionFailed);
+        }
+
+        let mut plaintext = vec![0u8; ciphertext.len() - SECRETBOX_MAC_BYTES];
+        let rc = unsafe {
+            sodium::crypto_secretbox_open_easy(
+                plaintext.as_mut_ptr(),
+                ciphertext.as_ptr(),
+                ciphertext.len() as libc::c_ulonglong,
+                nonce.as_ptr(),
+                key.as_ptr(),
+            )
+        };
+        if rc != 0 {
+            return Err(VaultError::DecryptionFailed);
+        }
+        Ok(plaintext)
     }
 
     fn load_or_create_salt(conn: &Connection) -> Result<[u8; SALT_LEN], VaultError> {
@@ -346,10 +414,7 @@ impl CredentialStore {
         MasterKey::from_derived_bytes(&derived)
     }
 
-    fn validate_or_create_canary(
-        conn: &Connection,
-        key: &secretbox::Key,
-    ) -> Result<(), VaultError> {
+    fn validate_or_create_canary(conn: &Connection, key: &MasterKey) -> Result<(), VaultError> {
         let existing: Option<Vec<u8>> = conn
             .query_row(
                 "SELECT value FROM vault_meta WHERE key = ?1",
@@ -359,13 +424,14 @@ impl CredentialStore {
             .optional()?;
 
         if let Some(blob) = existing {
-            if blob.len() < secretbox::NONCEBYTES {
+            if blob.len() < NONCE_LEN {
                 return Err(VaultError::InvalidMasterPassword);
             }
-            let nonce = secretbox::Nonce::from_slice(&blob[..secretbox::NONCEBYTES])
-                .ok_or(VaultError::InvalidMasterPassword)?;
-            let cipher = &blob[secretbox::NONCEBYTES..];
-            let plaintext = secretbox::open(cipher, &nonce, key)
+            let nonce_bytes: [u8; NONCE_LEN] = blob[..NONCE_LEN]
+                .try_into()
+                .map_err(|_| VaultError::InvalidMasterPassword)?;
+            let ciphertext = &blob[NONCE_LEN..];
+            let plaintext = Self::decrypt_with_key(key.key_array(), &nonce_bytes, ciphertext)
                 .map_err(|_| VaultError::InvalidMasterPassword)?;
             if plaintext != CANARY_PLAINTEXT {
                 return Err(VaultError::InvalidMasterPassword);
@@ -373,10 +439,9 @@ impl CredentialStore {
             return Ok(());
         }
 
-        let nonce = secretbox::gen_nonce();
-        let cipher = secretbox::seal(CANARY_PLAINTEXT, &nonce, key);
-        let mut blob = nonce.0.to_vec();
-        blob.extend_from_slice(&cipher);
+        let (ciphertext, nonce_bytes) = Self::encrypt_with_key(key.key_array(), CANARY_PLAINTEXT)?;
+        let mut blob = nonce_bytes.to_vec();
+        blob.extend_from_slice(&ciphertext);
         conn.execute(
             "INSERT INTO vault_meta(key, value) VALUES(?1, ?2)",
             params![META_CANARY_KEY, blob],
@@ -422,14 +487,13 @@ impl CredentialStore {
         let key = self.key.clone();
         let service = service.trim().to_string();
         let name = name.trim().to_string();
-        let mut key_value = Zeroizing::new(raw_key.to_string());
+        let mut key_value = Zeroizing::new(raw_key.trim().to_string());
 
         tokio::task::spawn_blocking(move || -> Result<CredentialMetadata, VaultError> {
             let conn = conn.lock().unwrap();
             let id = uuid::Uuid::new_v4().to_string();
             let now = chrono::Utc::now().timestamp();
-            let nonce = secretbox::gen_nonce();
-            let encrypted = secretbox::seal(key_value.as_bytes(), &nonce, key.secretbox_key());
+            let (encrypted, nonce_bytes) = Self::encrypt_with_key(key.key_array(), key_value.as_bytes())?;
 
             conn.execute(
                 "INSERT INTO credentials(id, service, name, encrypted_key, nonce, created_at, last_used_at)
@@ -439,7 +503,7 @@ impl CredentialStore {
                     service,
                     name,
                     encrypted,
-                    nonce.0.to_vec(),
+                    nonce_bytes.to_vec(),
                     now
                 ],
             )?;
@@ -492,10 +556,11 @@ impl CredentialStore {
             let Some((id, encrypted_key, nonce_bytes)) = row else {
                 return Ok(None);
             };
-            let nonce =
-                secretbox::Nonce::from_slice(&nonce_bytes).ok_or(VaultError::InvalidNonce)?;
-            let plaintext = secretbox::open(&encrypted_key, &nonce, key.secretbox_key())
-                .map_err(|_| VaultError::InvalidMasterPassword)?;
+            let nonce_bytes: [u8; NONCE_LEN] = nonce_bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| VaultError::InvalidNonce)?;
+            let plaintext = Self::decrypt_with_key(key.key_array(), &nonce_bytes, &encrypted_key)?;
             let key_str = String::from_utf8(plaintext).map_err(|_| VaultError::InvalidUtf8)?;
 
             Ok(Some(DecryptedCredential {
@@ -532,10 +597,11 @@ impl CredentialStore {
             let Some((id, encrypted_key, nonce_bytes)) = row else {
                 return Ok(None);
             };
-            let nonce =
-                secretbox::Nonce::from_slice(&nonce_bytes).ok_or(VaultError::InvalidNonce)?;
-            let plaintext = secretbox::open(&encrypted_key, &nonce, key.secretbox_key())
-                .map_err(|_| VaultError::InvalidMasterPassword)?;
+            let nonce_bytes: [u8; NONCE_LEN] = nonce_bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| VaultError::InvalidNonce)?;
+            let plaintext = Self::decrypt_with_key(key.key_array(), &nonce_bytes, &encrypted_key)?;
             let key_str = String::from_utf8(plaintext).map_err(|_| VaultError::InvalidUtf8)?;
 
             Ok(Some(DecryptedCredential {
@@ -551,10 +617,13 @@ impl CredentialStore {
         let id = id.to_string();
         tokio::task::spawn_blocking(move || -> Result<(), VaultError> {
             let conn = conn.lock().unwrap();
-            conn.execute(
+            let updated = conn.execute(
                 "UPDATE credentials SET last_used_at = ?1 WHERE id = ?2",
                 params![chrono::Utc::now().timestamp(), id],
             )?;
+            if updated == 0 {
+                return Err(VaultError::NotFound);
+            }
             Ok(())
         })
         .await?
@@ -570,12 +639,12 @@ impl CredentialStore {
         let conn = self.conn.lock().unwrap();
         let id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now().timestamp();
-        let nonce = secretbox::gen_nonce();
-        let encrypted = secretbox::seal(raw_key.as_bytes(), &nonce, self.key.secretbox_key());
+        let (encrypted, nonce_bytes) =
+            Self::encrypt_with_key(self.key.key_array(), raw_key.as_bytes())?;
         conn.execute(
             "INSERT INTO credentials(id, service, name, encrypted_key, nonce, created_at, last_used_at)
              VALUES(?1, ?2, ?3, ?4, ?5, ?6, NULL)",
-            params![id, service, name, encrypted, nonce.0.to_vec(), now],
+            params![id, service, name, encrypted, nonce_bytes.to_vec(), now],
         )?;
         Ok(id)
     }
@@ -600,11 +669,14 @@ fn require_mlock() -> bool {
 pub async fn list_credentials(State(state): State<AppState>) -> impl IntoResponse {
     match state.credential_store.list_credentials().await {
         Ok(credentials) => Json(credentials).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": format!("vault error: {e}") })),
-        )
-            .into_response(),
+        Err(e) => {
+            eprintln!("[fishnet] failed to list credentials: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "failed to list credentials" })),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -627,12 +699,17 @@ pub async fn create_credential(
         .add_credential(&req.service, &req.name, &req.key)
         .await
     {
-        Ok(credential) => Json(serde_json::json!(credential)).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": format!("vault error: {e}") })),
-        )
-            .into_response(),
+        Ok(credential) => {
+            (StatusCode::CREATED, Json(serde_json::json!(credential))).into_response()
+        }
+        Err(e) => {
+            eprintln!("[fishnet] failed to create credential: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "failed to create credential" })),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -647,11 +724,14 @@ pub async fn delete_credential(
             Json(serde_json::json!({ "error": "credential not found" })),
         )
             .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": format!("vault error: {e}") })),
-        )
-            .into_response(),
+        Err(e) => {
+            eprintln!("[fishnet] failed to delete credential {id}: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "failed to delete credential" })),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -740,6 +820,52 @@ mod tests {
             second_used > first_used,
             "last_used_at should move forward after later access"
         );
+    }
+
+    #[tokio::test]
+    async fn touch_last_used_missing_id_returns_not_found() {
+        let store = CredentialStore::open_in_memory("master-password").unwrap();
+        let err = store.touch_last_used("missing-id").await.unwrap_err();
+        assert!(matches!(err, VaultError::NotFound));
+    }
+
+    #[tokio::test]
+    async fn decrypt_corrupted_ciphertext_returns_decryption_failed() {
+        let store = CredentialStore::open_in_memory("master-password").unwrap();
+        store
+            .add_credential("openai", "primary", "sk-test-corrupt")
+            .await
+            .unwrap();
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE credentials SET encrypted_key = X'00' WHERE service = ?1",
+                params!["openai"],
+            )
+            .unwrap();
+        }
+
+        let err = match store.decrypt_for_service("openai").await {
+            Ok(_) => panic!("expected corrupted ciphertext to fail decryption"),
+            Err(e) => e,
+        };
+        assert!(matches!(err, VaultError::DecryptionFailed));
+    }
+
+    #[tokio::test]
+    async fn add_credential_trims_key_value() {
+        let store = CredentialStore::open_in_memory("master-password").unwrap();
+        store
+            .add_credential("openai", "primary", "  sk-test-trimmed  ")
+            .await
+            .unwrap();
+
+        let credential = store
+            .decrypt_for_service("openai")
+            .await
+            .unwrap()
+            .expect("credential must exist");
+        assert_eq!(credential.key.as_str(), "sk-test-trimmed");
     }
 
     #[tokio::test]

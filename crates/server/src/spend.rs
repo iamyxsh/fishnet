@@ -178,14 +178,30 @@ impl SpendStore {
                 "ALTER TABLE spend_records ADD COLUMN cost_micros INTEGER NOT NULL DEFAULT 0",
                 [],
             )?;
-        }
 
-        conn.execute(
-            "UPDATE spend_records
-             SET cost_micros = CAST(ROUND(cost_usd * 1000000.0) AS INTEGER)
-             WHERE cost_micros = 0 AND cost_usd != 0",
-            [],
-        )?;
+            let mut stmt = conn.prepare(
+                "SELECT rowid, cost_usd
+                 FROM spend_records
+                 WHERE cost_micros = 0 AND cost_usd != 0",
+            )?;
+            let rows =
+                stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?)))?;
+
+            let mut updates: Vec<(i64, i64)> = Vec::new();
+            for row in rows {
+                let (row_id, cost_usd) = row?;
+                let cost_micros = usd_f64_to_micros(cost_usd)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                updates.push((row_id, cost_micros));
+            }
+
+            for (row_id, cost_micros) in updates {
+                conn.execute(
+                    "UPDATE spend_records SET cost_micros = ?1 WHERE rowid = ?2",
+                    params![cost_micros, row_id],
+                )?;
+            }
+        }
 
         Ok(())
     }
@@ -559,13 +575,14 @@ fn usd_f64_to_micros(usd: f64) -> Result<i64, SpendError> {
             "{usd} is not a valid non-negative finite USD amount"
         )));
     }
-    let scaled = (usd * USD_MICROS_SCALE as f64).round();
-    if scaled < i64::MIN as f64 || scaled > i64::MAX as f64 {
+    let scaled = usd * USD_MICROS_SCALE as f64;
+    let max_allowed = (i64::MAX as f64) - 0.5;
+    if !scaled.is_finite() || scaled > max_allowed {
         return Err(SpendError::InvalidAmount(format!(
             "{usd} is outside supported range"
         )));
     }
-    Ok(scaled as i64)
+    Ok(scaled.round() as i64)
 }
 
 #[derive(Debug, Deserialize)]

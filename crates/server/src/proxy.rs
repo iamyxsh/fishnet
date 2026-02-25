@@ -7,6 +7,7 @@ use hmac::{Hmac, Mac};
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::{Decimal, RoundingStrategy};
 use sha2::Sha256;
+use std::collections::HashSet;
 use std::str::FromStr;
 use url::form_urlencoded;
 
@@ -214,8 +215,12 @@ pub async fn binance_handler(
     }
 
     let mut parsed_params: Vec<(String, String)> = Vec::new();
+    let mut seen_param_keys: HashSet<String> = HashSet::new();
     if let Some(query) = uri.query() {
-        parsed_params.extend(parse_form_pairs(query));
+        if let Err(msg) = append_unique_form_pairs(&mut parsed_params, &mut seen_param_keys, query)
+        {
+            return json_error(StatusCode::BAD_REQUEST, &msg);
+        }
     }
 
     if !body.is_empty() {
@@ -228,7 +233,11 @@ pub async fn binance_handler(
                 );
             }
         };
-        parsed_params.extend(parse_form_pairs(body_str));
+        if let Err(msg) =
+            append_unique_form_pairs(&mut parsed_params, &mut seen_param_keys, body_str)
+        {
+            return json_error(StatusCode::BAD_REQUEST, &msg);
+        }
     }
 
     let _order_guard = if is_order {
@@ -259,11 +268,19 @@ pub async fn binance_handler(
 
         let daily_cap_micros = config_usd_to_micros(config.binance.daily_volume_cap_usd);
         if daily_cap_micros > 0 {
-            let spent_today_micros = state
-                .spend_store
-                .get_spent_today_micros("binance")
-                .await
-                .unwrap_or(0);
+            let spent_today_micros = match state.spend_store.get_spent_today_micros("binance").await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!(
+                        "[fishnet] failed to read binance spend state while enforcing daily cap: {e}"
+                    );
+                    return json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "failed to evaluate daily binance volume cap",
+                    );
+                }
+            };
             let projected_micros = match spent_today_micros.checked_add(value_micros) {
                 Some(total) => total,
                 None => {
@@ -596,6 +613,20 @@ fn parse_form_pairs(input: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+fn append_unique_form_pairs(
+    parsed_params: &mut Vec<(String, String)>,
+    seen_keys: &mut HashSet<String>,
+    input: &str,
+) -> Result<(), String> {
+    for (key, value) in parse_form_pairs(input) {
+        if !seen_keys.insert(key.clone()) {
+            return Err(format!("duplicate parameter key is not allowed: {key}"));
+        }
+        parsed_params.push((key, value));
+    }
+    Ok(())
+}
+
 fn serialize_form_pairs(params: &[(String, String)]) -> String {
     let mut serializer = form_urlencoded::Serializer::new(String::new());
     for (k, v) in params {
@@ -620,10 +651,19 @@ fn parse_binance_order_value_usd(params: &[(String, String)]) -> Result<i64, Str
         return decimal_to_micros(value, RoundingStrategy::ToPositiveInfinity);
     }
 
-    let price = lookup_param(params, "price")
+    let price_raw = lookup_param(params, "price");
+    let quantity_raw = lookup_param(params, "quantity");
+    if price_raw.is_none() && quantity_raw.is_some() {
+        return Err(
+            "missing price: for MARKET orders please provide quoteOrderQty to express USD value"
+                .to_string(),
+        );
+    }
+
+    let price = price_raw
         .and_then(parse_positive_decimal)
         .ok_or_else(|| "missing or invalid price in binance order request".to_string())?;
-    let quantity = lookup_param(params, "quantity")
+    let quantity = quantity_raw
         .and_then(parse_positive_decimal)
         .ok_or_else(|| "missing or invalid quantity in binance order request".to_string())?;
 
@@ -907,6 +947,7 @@ mod tests {
     #[test]
     fn wildcard_path_match_cases() {
         assert!(wildcard_path_match("/repos/*", "/repos/fishnet"));
+        assert!(wildcard_path_match("/repos/*", "/repos/owner/repo"));
         assert!(wildcard_path_match(
             "/repos/*/admin/*",
             "/repos/org/admin/teams"
@@ -958,6 +999,25 @@ mod tests {
         ];
         let value = parse_binance_order_value_usd(&params).unwrap();
         assert_eq!(value, 1);
+    }
+
+    #[test]
+    fn parse_binance_market_order_requires_quote_qty_when_price_missing() {
+        let params = vec![
+            ("symbol".to_string(), "BTCUSDT".to_string()),
+            ("quantity".to_string(), "0.01".to_string()),
+        ];
+        let err = parse_binance_order_value_usd(&params).unwrap_err();
+        assert!(err.contains("quoteOrderQty"));
+    }
+
+    #[test]
+    fn append_unique_form_pairs_rejects_duplicate_keys() {
+        let mut parsed = Vec::new();
+        let mut seen = HashSet::new();
+        append_unique_form_pairs(&mut parsed, &mut seen, "price=10").unwrap();
+        let err = append_unique_form_pairs(&mut parsed, &mut seen, "price=12").unwrap_err();
+        assert!(err.contains("duplicate parameter key"));
     }
 
     #[test]

@@ -1196,7 +1196,7 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::CREATED);
         let created = body_json(resp.into_body()).await;
         let created_id = created["id"].as_str().unwrap().to_string();
         assert_eq!(created["service"], "custom.github");
