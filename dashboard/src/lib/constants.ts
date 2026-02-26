@@ -5,6 +5,7 @@ export const ROUTES = {
   ALERTS: "/alerts",
   SPEND: "/spend",
   ONCHAIN: "/onchain",
+  CREDENTIALS: "/credentials",
 } as const;
 
 export const POLLING_INTERVALS = {
