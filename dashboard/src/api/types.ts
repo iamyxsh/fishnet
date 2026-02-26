@@ -203,6 +203,25 @@ export interface PermitsResponse {
   permits: Permit[];
 }
 
+// --- Credentials ---
+export interface Credential {
+  id: string;
+  service: string;
+  name: string;
+  created_at: string;
+  last_used_at: string | null;
+}
+
+export interface CredentialsResponse {
+  credentials: Credential[];
+}
+
+export interface CreateCredentialPayload {
+  service: string;
+  name: string;
+  api_key: string;
+}
+
 // --- Generic ---
 export interface ApiError {
   error: string;

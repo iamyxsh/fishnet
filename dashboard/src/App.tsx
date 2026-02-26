@@ -14,6 +14,7 @@ const SettingsPage = lazy(() => import("@/pages/settings/SettingsPage"));
 const AlertsPage = lazy(() => import("@/pages/alerts/AlertsPage"));
 const SpendPage = lazy(() => import("@/pages/spend/SpendPage"));
 const OnchainPage = lazy(() => import("@/pages/onchain/OnchainPage"));
+const CredentialsPage = lazy(() => import("@/pages/credentials/CredentialsPage"));
 const LoginPage = lazy(() => import("@/pages/login/LoginPage"));
 
 function PageLoader() {
@@ -94,6 +95,14 @@ export default function App() {
                 element={
                   <Suspense fallback={<PageLoader />}>
                     <OnchainPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path={ROUTES.CREDENTIALS}
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <CredentialsPage />
                   </Suspense>
                 }
               />
