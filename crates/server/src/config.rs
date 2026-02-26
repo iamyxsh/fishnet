@@ -19,6 +19,8 @@ pub enum ConfigError {
         path: PathBuf,
         source: toml::de::Error,
     },
+    #[error("invalid config in {path}: {message}")]
+    Validation { path: PathBuf, message: String },
     #[error("failed to serialize config to {path}: {source}")]
     Serialize {
         path: PathBuf,
@@ -33,11 +35,6 @@ pub fn default_config_path() -> Option<PathBuf> {
 pub fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
     if let Some(path) = explicit {
         return Some(path.to_path_buf());
-    }
-
-    let cwd_config = PathBuf::from(constants::CONFIG_FILE);
-    if cwd_config.exists() {
-        return Some(cwd_config);
     }
 
     if let Some(mut home_config) = dirs::home_dir() {
@@ -58,12 +55,29 @@ pub fn load_config(path: Option<&Path>) -> Result<FishnetConfig, ConfigError> {
                 path: path.to_path_buf(),
                 source: e,
             })?;
-            toml::from_str(&content).map_err(|e| ConfigError::Parse {
-                path: path.to_path_buf(),
-                source: e,
-            })
+            let mut config: FishnetConfig =
+                toml::from_str(&content).map_err(|e| ConfigError::Parse {
+                    path: path.to_path_buf(),
+                    source: e,
+                })?;
+            config
+                .validate()
+                .map_err(|message| ConfigError::Validation {
+                    path: path.to_path_buf(),
+                    message,
+                })?;
+            Ok(config)
         }
-        None => Ok(FishnetConfig::default()),
+        None => {
+            let mut config = FishnetConfig::default();
+            config
+                .validate()
+                .map_err(|message| ConfigError::Validation {
+                    path: PathBuf::from("<defaults>"),
+                    message,
+                })?;
+            Ok(config)
+        }
     }
 }
 
@@ -77,11 +91,10 @@ pub fn config_channel(
 }
 
 pub fn save_config(path: &Path, config: &FishnetConfig) -> Result<(), ConfigError> {
-    let toml_string =
-        toml::to_string_pretty(config).map_err(|e| ConfigError::Serialize {
-            path: path.to_path_buf(),
-            source: e,
-        })?;
+    let toml_string = toml::to_string_pretty(config).map_err(|e| ConfigError::Serialize {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| ConfigError::Read {
@@ -188,6 +201,59 @@ mode = "invalid_mode"
 
         let err = load_config(Some(&path)).unwrap_err();
         assert!(matches!(err, ConfigError::Parse { .. }));
+    }
+
+    #[test]
+    fn load_rejects_recv_window_ms_above_binance_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fishnet.toml");
+        std::fs::write(
+            &path,
+            r#"
+[binance]
+recv_window_ms = 70000
+"#,
+        )
+        .unwrap();
+
+        let err = load_config(Some(&path)).unwrap_err();
+        assert!(matches!(err, ConfigError::Validation { .. }));
+        assert!(err.to_string().contains("recv_window_ms"));
+    }
+
+    #[test]
+    fn load_clamps_recv_window_ms_zero_to_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fishnet.toml");
+        std::fs::write(
+            &path,
+            r#"
+[binance]
+recv_window_ms = 0
+"#,
+        )
+        .unwrap();
+
+        let config = load_config(Some(&path)).unwrap();
+        assert_eq!(config.binance.recv_window_ms, 5_000);
+    }
+
+    #[test]
+    fn load_rejects_custom_service_with_empty_base_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fishnet.toml");
+        std::fs::write(
+            &path,
+            r#"
+[custom.github]
+auth_header = "Authorization"
+"#,
+        )
+        .unwrap();
+
+        let err = load_config(Some(&path)).unwrap_err();
+        assert!(matches!(err, ConfigError::Validation { .. }));
+        assert!(err.to_string().contains("custom.github.base_url"));
     }
 
     #[test]
