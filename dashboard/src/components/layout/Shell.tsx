@@ -10,6 +10,8 @@ const routeTitles: Record<string, string> = {
   [ROUTES.ALERTS]: "Alerts",
   [ROUTES.SPEND]: "Spend Analytics",
   [ROUTES.ONCHAIN]: "Onchain Permits",
+  [ROUTES.EXCHANGE_CONFIG]: "Exchange Config",
+  [ROUTES.ZK_PROOFS]: "ZK Proofs",
 };
 
 const routeSubtitles: Record<string, string> = {
@@ -18,6 +20,8 @@ const routeSubtitles: Record<string, string> = {
   [ROUTES.ALERTS]: "Monitor and manage security and budget alerts",
   [ROUTES.SPEND]: "Budget tracking and daily spend breakdown",
   [ROUTES.ONCHAIN]: "Contract whitelist, permit history, and signer status",
+  [ROUTES.EXCHANGE_CONFIG]: "Configure exchange connections, endpoints, and volume limits",
+  [ROUTES.ZK_PROOFS]: "Generate and manage zero-knowledge compliance proofs",
 };
 
 export function Shell() {

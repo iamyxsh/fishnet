@@ -5,6 +5,8 @@ export const ROUTES = {
   ALERTS: "/alerts",
   SPEND: "/spend",
   ONCHAIN: "/onchain",
+  EXCHANGE_CONFIG: "/exchange-config",
+  ZK_PROOFS: "/zk-proofs",
 } as const;
 
 export const POLLING_INTERVALS = {
@@ -12,6 +14,7 @@ export const POLLING_INTERVALS = {
   ALERTS: 30_000,
   SPEND: 60_000,
   ONCHAIN: 10_000,
+  PROOF_JOB: 2_500,
 } as const;
 
 /** Human-readable chain names for common EVM chain IDs */

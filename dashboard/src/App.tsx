@@ -14,6 +14,8 @@ const SettingsPage = lazy(() => import("@/pages/settings/SettingsPage"));
 const AlertsPage = lazy(() => import("@/pages/alerts/AlertsPage"));
 const SpendPage = lazy(() => import("@/pages/spend/SpendPage"));
 const OnchainPage = lazy(() => import("@/pages/onchain/OnchainPage"));
+const ExchangeConfigPage = lazy(() => import("@/pages/exchange-config/ExchangeConfigPage"));
+const ZkProofsPage = lazy(() => import("@/pages/zk-proofs/ZkProofsPage"));
 const LoginPage = lazy(() => import("@/pages/login/LoginPage"));
 
 function PageLoader() {
@@ -94,6 +96,22 @@ export default function App() {
                 element={
                   <Suspense fallback={<PageLoader />}>
                     <OnchainPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path={ROUTES.EXCHANGE_CONFIG}
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <ExchangeConfigPage />
+                  </Suspense>
+                }
+              />
+              <Route
+                path={ROUTES.ZK_PROOFS}
+                element={
+                  <Suspense fallback={<PageLoader />}>
+                    <ZkProofsPage />
                   </Suspense>
                 }
               />
