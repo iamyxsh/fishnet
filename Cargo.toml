@@ -42,3 +42,4 @@ libc = "0.2"
 hmac = "0.12"
 url = "2"
 rust_decimal = "1"
+tiny-keccak = { version = "2", features = ["keccak"] }

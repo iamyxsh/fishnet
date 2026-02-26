@@ -1,4 +1,5 @@
 pub mod alert;
+pub mod audit;
 pub mod auth;
 pub mod config;
 pub mod constants;
@@ -16,6 +17,7 @@ pub mod session;
 pub mod signer;
 pub mod spend;
 pub mod state;
+pub mod system;
 pub mod vault;
 pub mod watch;
 
@@ -37,6 +39,11 @@ pub fn create_router(state: AppState) -> Router {
 
     let protected_routes = Router::new()
         .route("/api/auth/logout", post(auth::logout))
+        .route("/api/status", get(system::status))
+        .route(
+            "/api/policies",
+            get(system::get_policies).put(system::put_policies),
+        )
         .route("/api/alerts", get(alert::list_alerts))
         .route("/api/alerts/dismiss", post(alert::dismiss_alert))
         .route(
@@ -60,6 +67,8 @@ pub fn create_router(state: AppState) -> Router {
         )
         .route("/api/onchain/stats", get(onchain::get_stats))
         .route("/api/onchain/permits", get(onchain::list_permits))
+        .route("/api/audit", get(audit::list_audit))
+        .route("/api/audit/export", get(audit::export_audit_csv))
         .route("/onchain/submit", post(onchain::submit_handler))
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
@@ -98,6 +107,7 @@ mod tests {
     use tower::ServiceExt;
 
     use alert::AlertStore;
+    use audit::{AuditStore, NewAuditEntry, merkle};
     use llm_guard::BaselineStore;
     use onchain::OnchainStore;
     use password::FilePasswordStore;
@@ -108,7 +118,7 @@ mod tests {
     use vault::CredentialStore;
 
     fn test_state(dir: &std::path::Path) -> AppState {
-        let (_tx, config_rx) =
+        let (config_tx, config_rx) =
             tokio::sync::watch::channel(Arc::new(fishnet_types::config::FishnetConfig::default()));
         let credential_store =
             Arc::new(CredentialStore::open_in_memory("test-master-password").unwrap());
@@ -119,27 +129,35 @@ mod tests {
             .insert_plaintext_for_test("anthropic", "anthropic-test", "test_anthropic_key")
             .unwrap();
 
-        AppState {
-            password_store: Arc::new(FilePasswordStore::new(dir.join("auth.json"))),
-            session_store: Arc::new(SessionStore::new()),
-            rate_limiter: Arc::new(LoginRateLimiter::new()),
-            proxy_rate_limiter: Arc::new(ProxyRateLimiter::new()),
+        AppState::new(
+            Arc::new(FilePasswordStore::new(dir.join("auth.json"))),
+            Arc::new(SessionStore::new()),
+            Arc::new(LoginRateLimiter::new()),
+            Arc::new(ProxyRateLimiter::new()),
+            config_tx,
             config_rx,
-            config_path: dir.join("fishnet.toml"),
-            alert_store: Arc::new(AlertStore::open_in_memory().unwrap()),
-            baseline_store: Arc::new(BaselineStore::new()),
-            spend_store: Arc::new(SpendStore::open_in_memory().unwrap()),
+            dir.join("fishnet.toml"),
+            Arc::new(AlertStore::open_in_memory().unwrap()),
+            Arc::new(AuditStore::open_in_memory().unwrap()),
+            Arc::new(BaselineStore::new()),
+            Arc::new(SpendStore::open_in_memory().unwrap()),
             credential_store,
-            binance_order_lock: Arc::new(tokio::sync::Mutex::new(())),
-            http_client: reqwest::Client::new(),
-            onchain_store: Arc::new(OnchainStore::new()),
-            signer: Arc::new(StubSigner::new()),
-        }
+            Arc::new(tokio::sync::Mutex::new(())),
+            reqwest::Client::new(),
+            Arc::new(OnchainStore::new()),
+            Arc::new(StubSigner::new()),
+            std::time::Instant::now(),
+        )
     }
 
     async fn body_json(body: Body) -> serde_json::Value {
         let bytes = body.collect().await.unwrap().to_bytes();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    async fn body_text(body: Body) -> String {
+        let bytes = body.collect().await.unwrap().to_bytes();
+        String::from_utf8_lossy(&bytes).to_string()
     }
 
     fn status_request() -> Request<Body> {
@@ -331,22 +349,25 @@ mod tests {
             .insert_plaintext_for_test("anthropic", "anthropic-test", "test_anthropic_key")
             .unwrap();
 
-        let state = AppState {
-            password_store: Arc::new(FilePasswordStore::new(dir.join("auth.json"))),
-            session_store: Arc::new(SessionStore::new()),
-            rate_limiter: Arc::new(LoginRateLimiter::new()),
-            proxy_rate_limiter: Arc::new(ProxyRateLimiter::new()),
+        let state = AppState::new(
+            Arc::new(FilePasswordStore::new(dir.join("auth.json"))),
+            Arc::new(SessionStore::new()),
+            Arc::new(LoginRateLimiter::new()),
+            Arc::new(ProxyRateLimiter::new()),
+            tx.clone(),
             config_rx,
-            config_path: dir.join("fishnet.toml"),
-            alert_store: Arc::new(AlertStore::open_in_memory().unwrap()),
-            baseline_store: Arc::new(BaselineStore::new()),
-            spend_store: Arc::new(SpendStore::open_in_memory().unwrap()),
+            dir.join("fishnet.toml"),
+            Arc::new(AlertStore::open_in_memory().unwrap()),
+            Arc::new(AuditStore::open_in_memory().unwrap()),
+            Arc::new(BaselineStore::new()),
+            Arc::new(SpendStore::open_in_memory().unwrap()),
             credential_store,
-            binance_order_lock: Arc::new(tokio::sync::Mutex::new(())),
-            http_client: reqwest::Client::new(),
-            onchain_store: Arc::new(OnchainStore::new()),
-            signer: Arc::new(StubSigner::new()),
-        };
+            Arc::new(tokio::sync::Mutex::new(())),
+            reqwest::Client::new(),
+            Arc::new(OnchainStore::new()),
+            Arc::new(StubSigner::new()),
+            std::time::Instant::now(),
+        );
         (state, tx)
     }
 
@@ -753,6 +774,7 @@ mod tests {
                 base_url: "https://api.github.com".to_string(),
                 auth_header: "Authorization".to_string(),
                 auth_value_prefix: "Bearer ".to_string(),
+                auth_value_env: "GITHUB_TOKEN".to_string(),
                 blocked_endpoints: vec!["DELETE /repos/*".to_string()],
                 rate_limit: 100,
                 rate_limit_window_seconds: 3600,
@@ -788,6 +810,7 @@ mod tests {
                 base_url,
                 auth_header: "Authorization".to_string(),
                 auth_value_prefix: "Bearer ".to_string(),
+                auth_value_env: "OPENAI_TOKEN".to_string(),
                 blocked_endpoints: vec![],
                 rate_limit: 100,
                 rate_limit_window_seconds: 3600,
@@ -833,6 +856,7 @@ mod tests {
                 base_url,
                 auth_header: "Authorization".to_string(),
                 auth_value_prefix: "Bearer ".to_string(),
+                auth_value_env: "GITHUB_TOKEN".to_string(),
                 blocked_endpoints: vec![],
                 rate_limit: 100,
                 rate_limit_window_seconds: 3600,
@@ -876,6 +900,7 @@ mod tests {
                 base_url,
                 auth_header: "Authorization".to_string(),
                 auth_value_prefix: "Bearer ".to_string(),
+                auth_value_env: "GITHUB_TOKEN".to_string(),
                 blocked_endpoints: vec![],
                 rate_limit: 100,
                 rate_limit_window_seconds: 3600,
@@ -2979,5 +3004,138 @@ mod tests {
         let body = body_json(resp.into_body()).await;
         assert_eq!(body["status"], "approved");
         assert_eq!(body["permit"]["value"], large_value);
+    }
+
+    #[tokio::test]
+    async fn test_status_endpoint_returns_runtime_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        let today = chrono::Utc::now()
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string();
+
+        state
+            .spend_store
+            .record_spend("openai", &today, 1.25)
+            .await
+            .unwrap();
+        state
+            .audit_store
+            .append(NewAuditEntry {
+                intent_type: "api_call".to_string(),
+                service: "openai".to_string(),
+                action: "POST /v1/chat/completions".to_string(),
+                decision: "approved".to_string(),
+                reason: None,
+                cost_usd: Some(1.25),
+                policy_version_hash: merkle::keccak256(b"policy"),
+                intent_hash: merkle::keccak256(b"intent"),
+                permit_hash: None,
+            })
+            .await
+            .unwrap();
+
+        let app = create_router(state);
+        let token = setup_and_login(&app).await;
+
+        let resp = app
+            .clone()
+            .oneshot(authed_get("/api/status", &token))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp.into_body()).await;
+        assert_eq!(body["running"], true);
+        assert!(!body["uptime"].as_str().unwrap_or_default().is_empty());
+        assert!(body["today_spend"]["openai"].as_f64().unwrap_or(0.0) >= 1.25);
+        assert!(body["today_requests"]["openai"].as_u64().unwrap_or(0) >= 1);
+    }
+
+    #[tokio::test]
+    async fn test_policies_put_and_get() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        let app = create_router(state.clone());
+        let token = setup_and_login(&app).await;
+
+        let mut updated = (*state.config()).clone();
+        updated.llm.allowed_models = vec!["gpt-4o".to_string()];
+
+        let resp = app
+            .clone()
+            .oneshot(authed_put(
+                "/api/policies",
+                &token,
+                serde_json::to_value(updated).unwrap(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp.into_body()).await;
+        assert_eq!(body["saved"], true);
+        assert!(
+            body["policy_hash"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("0x")
+        );
+        let persisted = crate::config::load_config(Some(&state.config_path)).unwrap();
+        assert_eq!(persisted.llm.allowed_models, vec!["gpt-4o".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_audit_query_and_export_endpoints() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+
+        for i in 0..3 {
+            state
+                .audit_store
+                .append(NewAuditEntry {
+                    intent_type: "api_call".to_string(),
+                    service: "openai".to_string(),
+                    action: format!("POST /v1/chat/completions/{i}"),
+                    decision: "approved".to_string(),
+                    reason: None,
+                    cost_usd: Some(0.1),
+                    policy_version_hash: merkle::keccak256(b"policy"),
+                    intent_hash: merkle::keccak256(format!("intent-{i}").as_bytes()),
+                    permit_hash: None,
+                })
+                .await
+                .unwrap();
+        }
+
+        let app = create_router(state);
+        let token = setup_and_login(&app).await;
+
+        let resp = app
+            .clone()
+            .oneshot(authed_get("/api/audit?page=1&page_size=2", &token))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp.into_body()).await;
+        assert_eq!(body["total"], 3);
+        assert_eq!(body["entries"].as_array().unwrap().len(), 2);
+
+        let resp = app
+            .clone()
+            .oneshot(authed_get("/api/audit/export", &token))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default(),
+            "text/csv; charset=utf-8"
+        );
+        let csv = body_text(resp.into_body()).await;
+        assert!(
+            csv.starts_with("id,timestamp,intent_type,service,action,decision,reason,cost_usd")
+        );
     }
 }

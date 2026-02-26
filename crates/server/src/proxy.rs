@@ -9,18 +9,55 @@ use rust_decimal::{Decimal, RoundingStrategy};
 use sha2::Sha256;
 use std::collections::HashSet;
 use std::str::FromStr;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use url::form_urlencoded;
+use zeroize::Zeroizing;
 
 use crate::alert::{AlertSeverity, AlertType};
+use crate::audit::{self, NewAuditEntry};
 use crate::constants;
 use crate::llm_guard::{
     GuardDecision, check_prompt_drift, check_prompt_size, count_prompt_chars, extract_system_prompt,
 };
 use crate::state::AppState;
 use crate::vault::DecryptedCredential;
+use fishnet_types::config::ModelPricing;
 
 type HmacSha256 = Hmac<Sha256>;
 const USD_MICROS_SCALE: i64 = 1_000_000;
+
+#[derive(Clone)]
+struct AuditContext {
+    intent_type: String,
+    service: String,
+    action: String,
+    policy_version_hash: audit::merkle::H256,
+    intent_hash: audit::merkle::H256,
+}
+
+#[derive(Debug, Clone, Default)]
+struct LlmRequestMeta {
+    model: Option<String>,
+    stream_requested: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TokenUsage {
+    input_tokens: u64,
+    output_tokens: u64,
+    total_tokens: u64,
+}
+
+#[derive(Debug, Default)]
+struct StreamUsageCollector {
+    line_buffer: Vec<u8>,
+    event_data: String,
+    model: Option<String>,
+    usage: Option<TokenUsage>,
+    anthropic_input_tokens: Option<u64>,
+    anthropic_output_tokens: Option<u64>,
+}
 
 pub async fn handler(
     State(state): State<AppState>,
@@ -29,6 +66,9 @@ pub async fn handler(
     uri: Uri,
     body: axum::body::Bytes,
 ) -> Response {
+    let config = state.config();
+    let raw_action = format!("{} {}", method, uri.path());
+
     let path = uri.path();
     let path = path
         .strip_prefix(constants::PROXY_PATH_PREFIX)
@@ -36,22 +76,47 @@ pub async fn handler(
     let (provider, rest) = match path.split_once('/') {
         Some((p, r)) => (p.to_string(), format!("/{r}")),
         None => {
-            return json_error(StatusCode::BAD_REQUEST, "invalid proxy path");
+            let ctx = build_api_audit_context(
+                &state,
+                &config,
+                "unknown",
+                &raw_action,
+                &method,
+                uri.query(),
+                &body,
+            );
+            return audited_json_error(&state, &ctx, StatusCode::BAD_REQUEST, "invalid proxy path")
+                .await;
         }
     };
+
+    let action = format!("{} {}", method, rest);
+    let audit_ctx = build_api_audit_context(
+        &state,
+        &config,
+        &provider,
+        &action,
+        &method,
+        uri.query(),
+        &body,
+    );
 
     let upstream_base = match provider.as_str() {
-        "openai" => constants::OPENAI_API_BASE,
-        "anthropic" => constants::ANTHROPIC_API_BASE,
+        "openai" => std::env::var(constants::ENV_OPENAI_API_BASE)
+            .unwrap_or_else(|_| constants::OPENAI_API_BASE.to_string()),
+        "anthropic" => std::env::var(constants::ENV_ANTHROPIC_API_BASE)
+            .unwrap_or_else(|_| constants::ANTHROPIC_API_BASE.to_string()),
         _ => {
-            return json_error(
+            return audited_json_error(
+                &state,
+                &audit_ctx,
                 StatusCode::BAD_REQUEST,
                 &format!("unknown provider: {provider}"),
-            );
+            )
+            .await;
         }
     };
 
-    let config = state.config();
     if config.llm.rate_limit_per_minute > 0
         && let Err(retry_after) = state
             .proxy_rate_limiter
@@ -72,36 +137,55 @@ pub async fn handler(
                 eprintln!("[fishnet] failed to create rate limit alert: {e}");
             }
         }
+        let message = format!("rate limit exceeded, retry after {retry_after}s");
+        log_audit_decision(
+            &state,
+            &audit_ctx,
+            "denied",
+            Some(message.clone()),
+            None,
+            None,
+        )
+        .await;
         return (
             StatusCode::TOO_MANY_REQUESTS,
             Json(serde_json::json!({
-                "error": format!("rate limit exceeded, retry after {retry_after}s"),
+                "error": message,
                 "retry_after_seconds": retry_after
             })),
         )
             .into_response();
     }
 
-    if let Err(resp) = enforce_llm_guards(&state, &provider, &headers, &body).await {
-        return resp;
-    }
+    let llm_meta = match enforce_llm_guards(&state, &provider, &headers, &body).await {
+        Ok(meta) => meta,
+        Err((status, message)) => {
+            return audited_json_error(&state, &audit_ctx, status, &message).await;
+        }
+    };
 
-    let target_url = with_query(upstream_base, &rest, uri.query());
+    let target_url = with_query(&upstream_base, &rest, uri.query());
     let (extra_headers, credential_id) = {
         let credential = match state.credential_store.decrypt_for_service(&provider).await {
             Ok(Some(cred)) => cred,
             Ok(None) => {
-                return json_error(
+                return audited_json_error(
+                    &state,
+                    &audit_ctx,
                     StatusCode::BAD_REQUEST,
                     &format!("credential not found for service: {provider}"),
-                );
+                )
+                .await;
             }
             Err(e) => {
                 eprintln!("[fishnet] failed to decrypt credential for {provider}: {e}");
-                return json_error(
+                return audited_json_error(
+                    &state,
+                    &audit_ctx,
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "failed to access credential vault",
-                );
+                )
+                .await;
             }
         };
 
@@ -112,10 +196,13 @@ pub async fn handler(
                 let auth_value = match HeaderValue::from_str(&auth_header) {
                     Ok(v) => v,
                     Err(_) => {
-                        return json_error(
+                        return audited_json_error(
+                            &state,
+                            &audit_ctx,
                             StatusCode::INTERNAL_SERVER_ERROR,
                             "invalid credential format for openai",
-                        );
+                        )
+                        .await;
                     }
                 };
                 extra_headers.push(("authorization".to_string(), auth_value));
@@ -124,10 +211,13 @@ pub async fn handler(
                 let api_key_value = match HeaderValue::from_str(credential.key.as_str()) {
                     Ok(v) => v,
                     Err(_) => {
-                        return json_error(
+                        return audited_json_error(
+                            &state,
+                            &audit_ctx,
                             StatusCode::INTERNAL_SERVER_ERROR,
                             "invalid credential format for anthropic",
-                        );
+                        )
+                        .await;
                     }
                 };
                 extra_headers.push(("x-api-key".to_string(), api_key_value));
@@ -142,23 +232,90 @@ pub async fn handler(
         eprintln!("[fishnet] failed to update credential last_used_at: {e}");
     }
 
+    let request_stream_requested = llm_meta.stream_requested
+        || request_body_stream_requested(&headers, &body).unwrap_or(false);
+    let outbound_body = if provider == "openai" && openai_stream_include_usage_supported_path(&rest)
+    {
+        ensure_openai_stream_include_usage(&headers, &body, request_stream_requested)
+    } else {
+        body
+    };
+
     let skip_headers = vec!["authorization".to_string(), "x-api-key".to_string()];
+    let incoming_request_id = headers
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_string());
     let upstream_resp = match send_upstream(
         &state,
         method,
         &headers,
         &target_url,
-        Some(body),
+        Some(outbound_body),
         &skip_headers,
         &extra_headers,
     )
     .await
     {
         Ok(resp) => resp,
-        Err(resp) => return resp,
+        Err(resp) => {
+            log_audit_decision(
+                &state,
+                &audit_ctx,
+                "denied",
+                Some("upstream provider is unavailable".to_string()),
+                None,
+                None,
+            )
+            .await;
+            return resp;
+        }
     };
 
-    build_proxy_response(upstream_resp)
+    if llm_meta.stream_requested || response_is_event_stream(&upstream_resp) {
+        let upstream_request_id = upstream_resp
+            .headers()
+            .get("x-request-id")
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.to_string());
+        let request_id = incoming_request_id
+            .as_deref()
+            .or(upstream_request_id.as_deref())
+            .unwrap_or("unknown");
+        let model_name = llm_meta.model.as_deref().unwrap_or("unknown");
+        eprintln!(
+            "[fishnet] warning: streaming cost is tracked only when usage appears in stream events (provider: {provider}, model: {model_name}, request_id: {request_id}); interrupted streams may miss cost"
+        );
+
+        let response = match build_streaming_proxy_response_with_usage(
+            state.clone(),
+            provider.clone(),
+            llm_meta.model.clone(),
+            upstream_resp,
+            request_id.to_string(),
+        ) {
+            Ok(response) => response,
+            Err(resp) => {
+                log_audit_decision(
+                    &state,
+                    &audit_ctx,
+                    "denied",
+                    Some("failed to build streaming response".to_string()),
+                    None,
+                    None,
+                )
+                .await;
+                return resp;
+            }
+        };
+        log_audit_decision(&state, &audit_ctx, "approved", None, None, None).await;
+        return response;
+    }
+
+    let (response, cost_usd) =
+        finalize_llm_response(&state, &provider, llm_meta.model.as_deref(), upstream_resp).await;
+    log_audit_decision(&state, &audit_ctx, "approved", None, cost_usd, None).await;
+    response
 }
 
 pub async fn binance_handler(
@@ -169,30 +326,74 @@ pub async fn binance_handler(
     body: axum::body::Bytes,
 ) -> Response {
     let config = state.config();
+    let fallback_action = format!("{} {}", method, uri.path());
+    let fallback_ctx = build_api_audit_context(
+        &state,
+        &config,
+        "binance",
+        &fallback_action,
+        &method,
+        uri.query(),
+        &body,
+    );
     if !config.binance.enabled {
-        return json_error(StatusCode::FORBIDDEN, "binance proxy is disabled");
+        return audited_json_error(
+            &state,
+            &fallback_ctx,
+            StatusCode::FORBIDDEN,
+            "binance proxy is disabled",
+        )
+        .await;
     }
 
     let Some(rest) = uri.path().strip_prefix("/binance") else {
-        return json_error(StatusCode::BAD_REQUEST, "invalid binance proxy path");
+        return audited_json_error(
+            &state,
+            &fallback_ctx,
+            StatusCode::BAD_REQUEST,
+            "invalid binance proxy path",
+        )
+        .await;
     };
     if rest.is_empty() || !rest.starts_with('/') {
-        return json_error(StatusCode::BAD_REQUEST, "invalid binance proxy path");
+        return audited_json_error(
+            &state,
+            &fallback_ctx,
+            StatusCode::BAD_REQUEST,
+            "invalid binance proxy path",
+        )
+        .await;
     }
 
     let route_path = rest.to_string();
+    let action = format!("{} {}", method, route_path);
+    let audit_ctx = build_api_audit_context(
+        &state,
+        &config,
+        "binance",
+        &action,
+        &method,
+        uri.query(),
+        &body,
+    );
     if !(route_path.starts_with("/api/") || route_path.starts_with("/sapi/")) {
-        return json_error(
+        return audited_json_error(
+            &state,
+            &audit_ctx,
             StatusCode::BAD_REQUEST,
             "binance path must start with /api or /sapi",
-        );
+        )
+        .await;
     }
 
     if method == Method::POST && route_path.starts_with("/sapi/v1/capital/withdraw/") {
-        return json_error(
+        return audited_json_error(
+            &state,
+            &audit_ctx,
             StatusCode::FORBIDDEN,
             "endpoint is hard-blocked by fishnet policy: withdrawals are disabled",
-        );
+        )
+        .await;
     }
 
     let is_read_only = method == Method::GET
@@ -201,17 +402,23 @@ pub async fn binance_handler(
     let is_delete_open_orders = method == Method::DELETE && route_path == "/api/v3/openOrders";
 
     if is_delete_open_orders && !config.binance.allow_delete_open_orders {
-        return json_error(
+        return audited_json_error(
+            &state,
+            &audit_ctx,
             StatusCode::FORBIDDEN,
             "endpoint blocked by default policy: DELETE /api/v3/openOrders",
-        );
+        )
+        .await;
     }
 
     if !is_read_only && !is_order && !is_delete_open_orders {
-        return json_error(
+        return audited_json_error(
+            &state,
+            &audit_ctx,
             StatusCode::FORBIDDEN,
             "binance endpoint is not allowed by policy",
-        );
+        )
+        .await;
     }
 
     let mut parsed_params: Vec<(String, String)> = Vec::new();
@@ -219,7 +426,7 @@ pub async fn binance_handler(
     if let Some(query) = uri.query() {
         if let Err(msg) = append_unique_form_pairs(&mut parsed_params, &mut seen_param_keys, query)
         {
-            return json_error(StatusCode::BAD_REQUEST, &msg);
+            return audited_json_error(&state, &audit_ctx, StatusCode::BAD_REQUEST, &msg).await;
         }
     }
 
@@ -227,21 +434,23 @@ pub async fn binance_handler(
         let body_str = match std::str::from_utf8(&body) {
             Ok(s) => s,
             Err(_) => {
-                return json_error(
+                return audited_json_error(
+                    &state,
+                    &audit_ctx,
                     StatusCode::BAD_REQUEST,
                     "binance request body must be UTF-8 form data",
-                );
+                )
+                .await;
             }
         };
         if let Err(msg) =
             append_unique_form_pairs(&mut parsed_params, &mut seen_param_keys, body_str)
         {
-            return json_error(StatusCode::BAD_REQUEST, &msg);
+            return audited_json_error(&state, &audit_ctx, StatusCode::BAD_REQUEST, &msg).await;
         }
     }
 
     let _order_guard = if is_order {
-        // Serialize order cap checks + spend recording to prevent concurrent overspend.
         Some(state.binance_order_lock.lock().await)
     } else {
         None
@@ -251,19 +460,24 @@ pub async fn binance_handler(
     if is_order {
         let value_micros = match parse_binance_order_value_usd(&parsed_params) {
             Ok(v) => v,
-            Err(msg) => return json_error(StatusCode::BAD_REQUEST, &msg),
+            Err(msg) => {
+                return audited_json_error(&state, &audit_ctx, StatusCode::BAD_REQUEST, &msg).await;
+            }
         };
 
         let max_order_micros = config_usd_to_micros(config.binance.max_order_value_usd);
         if max_order_micros > 0 && value_micros > max_order_micros {
-            return json_error(
+            return audited_json_error(
+                &state,
+                &audit_ctx,
                 StatusCode::FORBIDDEN,
                 &format!(
                     "order value ${} exceeds max_order_value_usd ${}",
                     format_usd_micros(value_micros),
                     format_usd_micros(max_order_micros),
                 ),
-            );
+            )
+            .await;
         }
 
         let daily_cap_micros = config_usd_to_micros(config.binance.daily_volume_cap_usd);
@@ -275,23 +489,31 @@ pub async fn binance_handler(
                     eprintln!(
                         "[fishnet] failed to read binance spend state while enforcing daily cap: {e}"
                     );
-                    return json_error(
+                    return audited_json_error(
+                        &state,
+                        &audit_ctx,
                         StatusCode::INTERNAL_SERVER_ERROR,
                         "failed to evaluate daily binance volume cap",
-                    );
+                    )
+                    .await;
                 }
             };
             let projected_micros = match spent_today_micros.checked_add(value_micros) {
                 Some(total) => total,
                 None => {
-                    return json_error(
+                    return audited_json_error(
+                        &state,
+                        &audit_ctx,
                         StatusCode::FORBIDDEN,
                         "daily binance volume cap exceeded: projected volume overflowed supported range",
-                    );
+                    )
+                    .await;
                 }
             };
             if projected_micros > daily_cap_micros {
-                return json_error(
+                return audited_json_error(
+                    &state,
+                    &audit_ctx,
                     StatusCode::FORBIDDEN,
                     &format!(
                         "daily binance volume cap exceeded: ${} + ${} > ${}",
@@ -299,7 +521,8 @@ pub async fn binance_handler(
                         format_usd_micros(value_micros),
                         format_usd_micros(daily_cap_micros),
                     ),
-                );
+                )
+                .await;
             }
         }
 
@@ -328,7 +551,18 @@ pub async fn binance_handler(
     if !is_read_only {
         let (api_key, api_secret) = match load_binance_credentials(&state).await {
             Ok(creds) => creds,
-            Err(resp) => return resp,
+            Err(resp) => {
+                log_audit_decision(
+                    &state,
+                    &audit_ctx,
+                    "denied",
+                    Some("failed to access credential vault".to_string()),
+                    None,
+                    None,
+                )
+                .await;
+                return resp;
+            }
         };
 
         if !parsed_params.iter().any(|(k, _)| k == "timestamp") {
@@ -351,7 +585,13 @@ pub async fn binance_handler(
         {
             Ok(sig) => sig,
             Err(msg) => {
-                return json_error(StatusCode::INTERNAL_SERVER_ERROR, &msg);
+                return audited_json_error(
+                    &state,
+                    &audit_ctx,
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &msg,
+                )
+                .await;
             }
         };
         parsed_params.push(("signature".to_string(), signature));
@@ -361,10 +601,13 @@ pub async fn binance_handler(
         let api_key_value = match HeaderValue::from_str(api_key.key.as_str()) {
             Ok(v) => v,
             Err(_) => {
-                return json_error(
+                return audited_json_error(
+                    &state,
+                    &audit_ctx,
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "invalid credential format for binance api key",
-                );
+                )
+                .await;
             }
         };
         extra_headers.push(("x-mbx-apikey".to_string(), api_key_value));
@@ -375,7 +618,6 @@ pub async fn binance_handler(
         if let Err(e) = state.credential_store.touch_last_used(&api_secret.id).await {
             eprintln!("[fishnet] failed to update binance api secret last_used_at: {e}");
         }
-        // Explicitly drop zeroizing key wrappers before sending the upstream request.
         drop(api_secret);
         drop(api_key);
     } else if !body.is_empty() {
@@ -394,9 +636,21 @@ pub async fn binance_handler(
     .await
     {
         Ok(resp) => resp,
-        Err(resp) => return resp,
+        Err(resp) => {
+            log_audit_decision(
+                &state,
+                &audit_ctx,
+                "denied",
+                Some("upstream provider is unavailable".to_string()),
+                None,
+                None,
+            )
+            .await;
+            return resp;
+        }
     };
 
+    let mut audit_cost = None;
     if is_order
         && upstream_resp.status().is_success()
         && let Some(cost_micros) = order_value_micros
@@ -412,9 +666,12 @@ pub async fn binance_handler(
         {
             eprintln!("[fishnet] failed to record binance spend: {e}");
         }
+        audit_cost = Some(micros_to_usd(cost_micros));
     }
 
-    build_proxy_response(upstream_resp)
+    let response = build_proxy_response(upstream_resp);
+    log_audit_decision(&state, &audit_ctx, "approved", None, audit_cost, None).await;
+    response
 }
 
 pub async fn custom_handler(
@@ -424,43 +681,81 @@ pub async fn custom_handler(
     uri: Uri,
     body: axum::body::Bytes,
 ) -> Response {
+    let config = state.config();
+    let fallback_action = format!("{} {}", method, uri.path());
+    let fallback_ctx = build_api_audit_context(
+        &state,
+        &config,
+        "custom",
+        &fallback_action,
+        &method,
+        uri.query(),
+        &body,
+    );
+
     let path = uri.path();
     let path = path.strip_prefix("/custom/").unwrap_or(path);
     let (name, rest) = match path.split_once('/') {
         Some((name, rest)) if !name.is_empty() => (name.to_string(), format!("/{rest}")),
         _ => {
-            return json_error(StatusCode::BAD_REQUEST, "invalid custom proxy path");
+            return audited_json_error(
+                &state,
+                &fallback_ctx,
+                StatusCode::BAD_REQUEST,
+                "invalid custom proxy path",
+            )
+            .await;
         }
     };
 
-    let config = state.config();
+    let action = format!("{} {}", method, rest);
+    let audit_ctx =
+        build_api_audit_context(&state, &config, &name, &action, &method, uri.query(), &body);
+
     let Some(service_cfg) = config.custom.get(&name).cloned() else {
-        return json_error(
+        return audited_json_error(
+            &state,
+            &audit_ctx,
             StatusCode::BAD_REQUEST,
             &format!("unknown custom service: {name}"),
-        );
+        )
+        .await;
     };
 
     if service_cfg.base_url.trim().is_empty() {
-        return json_error(
+        return audited_json_error(
+            &state,
+            &audit_ctx,
             StatusCode::BAD_REQUEST,
             &format!("custom service {name} has empty base_url"),
-        );
+        )
+        .await;
     }
 
-    if let Err(retry_after) = state
-        .proxy_rate_limiter
-        .check_and_record_with_window(
-            &format!("custom:{name}"),
-            service_cfg.rate_limit,
-            service_cfg.rate_limit_window_seconds,
-        )
-        .await
+    if service_cfg.rate_limit > 0
+        && let Err(retry_after) = state
+            .proxy_rate_limiter
+            .check_and_record_with_window(
+                &format!("custom:{name}"),
+                service_cfg.rate_limit,
+                service_cfg.rate_limit_window_seconds,
+            )
+            .await
     {
+        let message = format!("rate limit exceeded, retry after {retry_after}s");
+        log_audit_decision(
+            &state,
+            &audit_ctx,
+            "denied",
+            Some(message.clone()),
+            None,
+            None,
+        )
+        .await;
         return (
             StatusCode::TOO_MANY_REQUESTS,
             Json(serde_json::json!({
-                "error": format!("rate limit exceeded, retry after {retry_after}s"),
+                "error": message,
                 "retry_after_seconds": retry_after
             })),
         )
@@ -472,7 +767,13 @@ pub async fn custom_handler(
         .iter()
         .any(|pattern| endpoint_pattern_matches(pattern, &method, &rest))
     {
-        return json_error(StatusCode::FORBIDDEN, "endpoint blocked by custom policy");
+        return audited_json_error(
+            &state,
+            &audit_ctx,
+            StatusCode::FORBIDDEN,
+            "endpoint blocked by custom policy",
+        )
+        .await;
     }
 
     let mut extra_headers: Vec<(String, HeaderValue)> = Vec::new();
@@ -480,46 +781,94 @@ pub async fn custom_handler(
 
     let auth_header_name = service_cfg.auth_header.trim().to_string();
     if !auth_header_name.is_empty() {
-        let credential = match load_custom_credential(&state, &name).await {
-            Ok(Some(cred)) => cred,
+        let (auth_secret, credential_id) = match load_custom_credential(&state, &name).await {
+            Ok(Some(cred)) => (cred.key, Some(cred.id)),
             Ok(None) => {
-                return json_error(
-                    StatusCode::BAD_REQUEST,
-                    &format!("credential not found for custom service: {name}"),
-                );
+                let env_name = service_cfg.auth_value_env.trim();
+                if env_name.is_empty() {
+                    return audited_json_error(
+                        &state,
+                        &audit_ctx,
+                        StatusCode::BAD_REQUEST,
+                        &format!(
+                            "credential not found for custom service: {name}; configure vault credential or custom.{name}.auth_value_env"
+                        ),
+                    )
+                    .await;
+                }
+                match std::env::var(env_name) {
+                    Ok(value) if !value.trim().is_empty() => (Zeroizing::new(value), None),
+                    Ok(_) => {
+                        return audited_json_error(
+                            &state,
+                            &audit_ctx,
+                            StatusCode::BAD_REQUEST,
+                            &format!(
+                                "custom service {name} auth env var {env_name} is set but empty"
+                            ),
+                        )
+                        .await;
+                    }
+                    Err(_) => {
+                        return audited_json_error(
+                            &state,
+                            &audit_ctx,
+                            StatusCode::BAD_REQUEST,
+                            &format!(
+                                "credential not found for custom service: {name}; env var {env_name} is not set"
+                            ),
+                        )
+                        .await;
+                    }
+                }
             }
-            Err(resp) => return resp,
+            Err(resp) => {
+                log_audit_decision(
+                    &state,
+                    &audit_ctx,
+                    "denied",
+                    Some("failed to access credential vault".to_string()),
+                    None,
+                    None,
+                )
+                .await;
+                return resp;
+            }
         };
 
         let header_name = match HeaderName::from_bytes(auth_header_name.as_bytes()) {
             Ok(v) => v,
             Err(_) => {
-                return json_error(
+                return audited_json_error(
+                    &state,
+                    &audit_ctx,
                     StatusCode::BAD_REQUEST,
                     &format!("invalid auth_header for custom service: {name}"),
-                );
+                )
+                .await;
             }
         };
         let header_name_str = header_name.as_str().to_string();
         skip_headers.push(header_name_str.to_ascii_lowercase());
 
-        let header_value = format!(
-            "{}{}",
-            service_cfg.auth_value_prefix,
-            credential.key.as_str()
-        );
+        let header_value = format!("{}{}", service_cfg.auth_value_prefix, auth_secret.as_str());
         let header_value = match HeaderValue::from_str(&header_value) {
             Ok(v) => v,
             Err(_) => {
-                return json_error(
+                return audited_json_error(
+                    &state,
+                    &audit_ctx,
                     StatusCode::INTERNAL_SERVER_ERROR,
                     &format!("invalid credential value for custom service: {name}"),
-                );
+                )
+                .await;
             }
         };
         extra_headers.push((header_name_str, header_value));
 
-        if let Err(e) = state.credential_store.touch_last_used(&credential.id).await {
+        if let Some(credential_id) = credential_id
+            && let Err(e) = state.credential_store.touch_last_used(&credential_id).await
+        {
             eprintln!("[fishnet] failed to update custom credential last_used_at: {e}");
         }
     }
@@ -538,10 +887,23 @@ pub async fn custom_handler(
     .await
     {
         Ok(resp) => resp,
-        Err(resp) => return resp,
+        Err(resp) => {
+            log_audit_decision(
+                &state,
+                &audit_ctx,
+                "denied",
+                Some("upstream provider is unavailable".to_string()),
+                None,
+                None,
+            )
+            .await;
+            return resp;
+        }
     };
 
-    build_proxy_response(upstream_resp)
+    let response = build_proxy_response(upstream_resp);
+    log_audit_decision(&state, &audit_ctx, "approved", None, None, None).await;
+    response
 }
 
 async fn enforce_llm_guards(
@@ -549,9 +911,12 @@ async fn enforce_llm_guards(
     provider: &str,
     headers: &HeaderMap,
     body: &axum::body::Bytes,
-) -> Result<(), Response> {
+) -> Result<LlmRequestMeta, (StatusCode, String)> {
     let config = state.config();
-    let needs_guards = config.llm.prompt_drift.enabled || config.llm.prompt_size_guard.enabled;
+    let model_restriction_enabled = !config.llm.allowed_models.is_empty();
+    let needs_guards = config.llm.prompt_drift.enabled
+        || config.llm.prompt_size_guard.enabled
+        || model_restriction_enabled;
 
     let is_json_body = headers
         .get("content-type")
@@ -563,15 +928,36 @@ async fn enforce_llm_guards(
             Ok(val) => Some(val),
             Err(e) => {
                 eprintln!("[fishnet] invalid JSON body: {e}");
-                return Err(json_error(
+                return Err((
                     StatusCode::BAD_REQUEST,
-                    "request body is not valid JSON",
+                    "request body is not valid JSON".to_string(),
                 ));
             }
         }
     } else {
         None
     };
+
+    let model = body_json
+        .as_ref()
+        .and_then(extract_model_name)
+        .map(|s| s.to_string());
+    let stream_requested = body_json
+        .as_ref()
+        .and_then(extract_stream_requested)
+        .unwrap_or(false);
+    if model_restriction_enabled {
+        let requested_model = model.clone().unwrap_or_else(|| "<missing>".to_string());
+        if !model
+            .as_deref()
+            .is_some_and(|m| model_allowed(m, &config.llm.allowed_models))
+        {
+            return Err((
+                StatusCode::FORBIDDEN,
+                format!("model not in allowlist: {requested_model}"),
+            ));
+        }
+    }
 
     if let Some(ref body_val) = body_json {
         let system_prompt = extract_system_prompt(provider, body_val);
@@ -586,7 +972,7 @@ async fn enforce_llm_guards(
         .await;
 
         if let GuardDecision::Deny(msg) = drift_result {
-            return Err(json_error(StatusCode::FORBIDDEN, &msg));
+            return Err((StatusCode::FORBIDDEN, msg));
         }
 
         let total_chars = count_prompt_chars(provider, body_val);
@@ -600,11 +986,307 @@ async fn enforce_llm_guards(
         .await;
 
         if let GuardDecision::Deny(msg) = size_result {
-            return Err(json_error(StatusCode::FORBIDDEN, &msg));
+            return Err((StatusCode::FORBIDDEN, msg));
         }
     }
 
-    Ok(())
+    Ok(LlmRequestMeta {
+        model,
+        stream_requested,
+    })
+}
+
+fn build_api_audit_context(
+    state: &AppState,
+    config: &fishnet_types::config::FishnetConfig,
+    service: &str,
+    action: &str,
+    method: &Method,
+    query: Option<&str>,
+    body: &[u8],
+) -> AuditContext {
+    AuditContext {
+        intent_type: "api_call".to_string(),
+        service: service.to_string(),
+        action: action.to_string(),
+        policy_version_hash: audit::policy_version_hash(&state.config_path, config),
+        intent_hash: audit::hash_api_intent(method.as_str(), service, action, query, body),
+    }
+}
+
+async fn audited_json_error(
+    state: &AppState,
+    ctx: &AuditContext,
+    status: StatusCode,
+    message: &str,
+) -> Response {
+    log_audit_decision(state, ctx, "denied", Some(message.to_string()), None, None).await;
+    json_error(status, message)
+}
+
+async fn log_audit_decision(
+    state: &AppState,
+    ctx: &AuditContext,
+    decision: &str,
+    reason: Option<String>,
+    cost_usd: Option<f64>,
+    permit_hash: Option<audit::merkle::H256>,
+) {
+    let entry = NewAuditEntry {
+        intent_type: ctx.intent_type.clone(),
+        service: ctx.service.clone(),
+        action: ctx.action.clone(),
+        decision: decision.to_string(),
+        reason,
+        cost_usd,
+        policy_version_hash: ctx.policy_version_hash,
+        intent_hash: ctx.intent_hash,
+        permit_hash,
+    };
+
+    if let Err(e) = state.audit_store.append(entry).await {
+        eprintln!("[fishnet] failed to append audit entry: {e}");
+    }
+}
+
+async fn finalize_llm_response(
+    state: &AppState,
+    provider: &str,
+    request_model: Option<&str>,
+    upstream_resp: reqwest::Response,
+) -> (Response, Option<f64>) {
+    let status = StatusCode::from_u16(upstream_resp.status().as_u16())
+        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let upstream_headers = upstream_resp.headers().clone();
+
+    let body_bytes = match upstream_resp.bytes().await {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("[fishnet] failed to read upstream response body: {e}");
+            return (
+                json_error(StatusCode::BAD_GATEWAY, "upstream provider is unavailable"),
+                None,
+            );
+        }
+    };
+
+    let config = state.config();
+    let mut recorded_cost = None;
+
+    if status.is_success()
+        && config.llm.track_spend
+        && let Some(cost_usd) = parse_llm_usage_and_cost(
+            provider,
+            request_model,
+            &body_bytes,
+            &config.llm.model_pricing,
+        )
+    {
+        if record_provider_spend(state, provider, cost_usd).await {
+            recorded_cost = Some(cost_usd);
+        }
+    }
+
+    let mut response_builder = Response::builder().status(status);
+    for (name, value) in &upstream_headers {
+        let name_str = name.as_str();
+        if matches!(name_str, "transfer-encoding" | "connection" | "keep-alive") {
+            continue;
+        }
+        if let Ok(header_value) = HeaderValue::from_bytes(value.as_bytes()) {
+            response_builder = response_builder.header(name.clone(), header_value);
+        }
+    }
+
+    let response = match response_builder.body(Body::from(body_bytes)) {
+        Ok(response) => response,
+        Err(e) => {
+            eprintln!("[fishnet] failed to build llm proxy response: {e}");
+            json_error(StatusCode::INTERNAL_SERVER_ERROR, "internal proxy error")
+        }
+    };
+
+    (response, recorded_cost)
+}
+
+async fn record_provider_spend(state: &AppState, provider: &str, cost_usd: f64) -> bool {
+    let cost_micros = (cost_usd * USD_MICROS_SCALE as f64).round() as i64;
+    if cost_micros < 0 {
+        return false;
+    }
+
+    let today = chrono::Utc::now()
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string();
+    if let Err(e) = state
+        .spend_store
+        .record_spend_micros(provider, &today, cost_micros)
+        .await
+    {
+        eprintln!("[fishnet] failed to record {provider} spend: {e}");
+        false
+    } else {
+        true
+    }
+}
+
+fn parse_llm_usage_and_cost(
+    provider: &str,
+    request_model: Option<&str>,
+    body: &[u8],
+    model_pricing: &std::collections::HashMap<String, ModelPricing>,
+) -> Option<f64> {
+    let body_json: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let usage = match provider {
+        "openai" => parse_openai_usage(&body_json),
+        "anthropic" => parse_anthropic_usage(&body_json),
+        _ => None,
+    }?;
+
+    let model = body_json
+        .get("model")
+        .and_then(|v| v.as_str())
+        .or(request_model)?;
+    compute_usage_cost(model, usage, model_pricing)
+}
+
+fn parse_openai_usage(body: &serde_json::Value) -> Option<TokenUsage> {
+    let usage = body.get("usage")?;
+    let prompt_tokens = usage.get("prompt_tokens").and_then(|v| v.as_u64())?;
+    let completion_tokens = usage.get("completion_tokens").and_then(|v| v.as_u64())?;
+    let total_tokens = usage
+        .get("total_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(prompt_tokens + completion_tokens);
+    Some(TokenUsage {
+        input_tokens: prompt_tokens,
+        output_tokens: completion_tokens,
+        total_tokens,
+    })
+}
+
+fn parse_anthropic_usage(body: &serde_json::Value) -> Option<TokenUsage> {
+    let usage = body.get("usage")?;
+    let input_tokens = usage.get("input_tokens").and_then(|v| v.as_u64())?;
+    let output_tokens = usage.get("output_tokens").and_then(|v| v.as_u64())?;
+    Some(TokenUsage {
+        input_tokens,
+        output_tokens,
+        total_tokens: input_tokens + output_tokens,
+    })
+}
+
+fn compute_usage_cost(
+    model: &str,
+    usage: TokenUsage,
+    model_pricing: &std::collections::HashMap<String, ModelPricing>,
+) -> Option<f64> {
+    let pricing = lookup_model_pricing(model, model_pricing)?;
+    if usage.total_tokens == 0 {
+        return Some(0.0);
+    }
+
+    let input_cost = usage.input_tokens as f64 * pricing.input_per_million_usd / 1_000_000.0;
+    let output_cost = usage.output_tokens as f64 * pricing.output_per_million_usd / 1_000_000.0;
+    let total = input_cost + output_cost;
+
+    if total.is_finite() && total >= 0.0 {
+        Some(total)
+    } else {
+        None
+    }
+}
+
+fn lookup_model_pricing<'a>(
+    model: &str,
+    model_pricing: &'a std::collections::HashMap<String, ModelPricing>,
+) -> Option<&'a ModelPricing> {
+    if let Some(pricing) = model_pricing.get(model) {
+        return Some(pricing);
+    }
+
+    let model_lower = model.to_ascii_lowercase();
+    model_pricing
+        .iter()
+        .filter(|(key, _)| {
+            let key_lower = key.to_ascii_lowercase();
+            model_lower == key_lower
+                || model_lower.starts_with(&format!("{key_lower}-"))
+                || model_lower.starts_with(&format!("{key_lower}:"))
+        })
+        .max_by_key(|(key, _)| key.len())
+        .map(|(_, pricing)| pricing)
+}
+
+fn extract_model_name(body: &serde_json::Value) -> Option<&str> {
+    body.get("model").and_then(|v| v.as_str())
+}
+
+fn extract_stream_requested(body: &serde_json::Value) -> Option<bool> {
+    body.get("stream").and_then(|v| v.as_bool())
+}
+
+fn is_json_request(headers: &HeaderMap) -> bool {
+    headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.contains("application/json"))
+}
+
+fn request_body_stream_requested(headers: &HeaderMap, body: &axum::body::Bytes) -> Option<bool> {
+    if body.is_empty() || !is_json_request(headers) {
+        return None;
+    }
+    let body_json: serde_json::Value = serde_json::from_slice(body).ok()?;
+    extract_stream_requested(&body_json)
+}
+
+fn openai_stream_include_usage_supported_path(path: &str) -> bool {
+    matches!(path, "/v1/chat/completions" | "/chat/completions")
+}
+
+fn ensure_openai_stream_include_usage(
+    headers: &HeaderMap,
+    body: &axum::body::Bytes,
+    stream_requested: bool,
+) -> axum::body::Bytes {
+    if !stream_requested || body.is_empty() || !is_json_request(headers) {
+        return body.clone();
+    }
+
+    let Ok(mut body_json) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return body.clone();
+    };
+    let Some(body_obj) = body_json.as_object_mut() else {
+        return body.clone();
+    };
+
+    let stream_options = body_obj
+        .entry("stream_options")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    let Some(options_obj) = stream_options.as_object_mut() else {
+        return body.clone();
+    };
+    if options_obj.contains_key("include_usage") {
+        return body.clone();
+    }
+
+    options_obj.insert("include_usage".to_string(), serde_json::Value::Bool(true));
+    match serde_json::to_vec(&body_json) {
+        Ok(updated) => axum::body::Bytes::from(updated),
+        Err(_) => body.clone(),
+    }
+}
+
+fn model_allowed(model: &str, allowed_models: &[String]) -> bool {
+    allowed_models
+        .iter()
+        .any(|allowed| allowed.eq_ignore_ascii_case(model))
+}
+
+fn micros_to_usd(value_micros: i64) -> f64 {
+    value_micros as f64 / USD_MICROS_SCALE as f64
 }
 
 fn parse_form_pairs(input: &str) -> Vec<(String, String)> {
@@ -734,12 +1416,15 @@ fn endpoint_pattern_matches(pattern: &str, method: &Method, path: &str) -> bool 
 }
 
 fn wildcard_path_match(pattern: &str, path: &str) -> bool {
-    if pattern == "*" {
+    if !pattern.is_empty() && pattern.chars().all(|c| c == '*') {
         return true;
     }
 
     let chunks: Vec<&str> = pattern.split('*').filter(|p| !p.is_empty()).collect();
     if chunks.is_empty() {
+        if pattern.contains('*') {
+            return true;
+        }
         return pattern == path;
     }
 
@@ -903,6 +1588,256 @@ fn should_skip_header(name: &str, extra_skip: &[String]) -> bool {
     extra_skip.iter().any(|h| h == &name)
 }
 
+fn response_is_event_stream(response: &reqwest::Response) -> bool {
+    response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|content_type| content_type.contains("text/event-stream"))
+}
+
+fn build_streaming_proxy_response_with_usage(
+    state: AppState,
+    provider: String,
+    request_model: Option<String>,
+    mut upstream_resp: reqwest::Response,
+    request_id: String,
+) -> Result<Response, Response> {
+    let status = StatusCode::from_u16(upstream_resp.status().as_u16())
+        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let upstream_headers = upstream_resp.headers().clone();
+    let (tx, rx) = mpsc::channel::<Result<axum::body::Bytes, std::io::Error>>(16);
+
+    let mut response_builder = Response::builder().status(status);
+    for (name, value) in &upstream_headers {
+        let name_str = name.as_str();
+        if matches!(name_str, "transfer-encoding" | "connection" | "keep-alive") {
+            continue;
+        }
+        if let Ok(header_value) = HeaderValue::from_bytes(value.as_bytes()) {
+            response_builder = response_builder.header(name.clone(), header_value);
+        }
+    }
+
+    let body_stream = ReceiverStream::new(rx);
+    let body = Body::from_stream(body_stream);
+    let response = match response_builder.body(body) {
+        Ok(response) => response,
+        Err(e) => {
+            eprintln!("[fishnet] failed to build streaming response: {e}");
+            return Err(json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal proxy error",
+            ));
+        }
+    };
+
+    tokio::spawn(async move {
+        let mut usage_collector = StreamUsageCollector::new(request_model);
+        let mut stream_completed = true;
+        while let Some(next_chunk) = upstream_resp.chunk().await.transpose() {
+            match next_chunk {
+                Ok(chunk) => {
+                    usage_collector.consume_chunk(&provider, &chunk);
+                    if tx.send(Ok(chunk)).await.is_err() {
+                        stream_completed = false;
+                        break;
+                    }
+                }
+                Err(e) => {
+                    stream_completed = false;
+                    eprintln!(
+                        "[fishnet] failed to read streaming response chunk (provider: {provider}, request_id: {request_id}): {e}"
+                    );
+                    let _ = tx
+                        .send(Err(std::io::Error::other("failed to read upstream stream")))
+                        .await;
+                    break;
+                }
+            }
+        }
+        drop(tx);
+        usage_collector.finish(&provider);
+
+        if status.is_success() {
+            let config = state.config();
+            if config.llm.track_spend {
+                let (model, usage) = usage_collector.into_parts();
+                match (model.as_deref(), usage) {
+                    (Some(model), Some(usage)) => {
+                        if let Some(cost_usd) =
+                            compute_usage_cost(model, usage, &config.llm.model_pricing)
+                        {
+                            if !record_provider_spend(&state, &provider, cost_usd).await {
+                                eprintln!(
+                                    "[fishnet] warning: failed to record stream spend (provider: {provider}, model: {model}, request_id: {request_id})"
+                                );
+                            }
+                        } else {
+                            eprintln!(
+                                "[fishnet] warning: unable to compute stream cost from parsed usage (provider: {provider}, model: {model}, request_id: {request_id})"
+                            );
+                        }
+                    }
+                    _ => {
+                        eprintln!(
+                            "[fishnet] warning: stream ended without complete usage data (provider: {provider}, request_id: {request_id})"
+                        );
+                    }
+                }
+            }
+        }
+
+        if !stream_completed {
+            eprintln!(
+                "[fishnet] warning: stream did not complete cleanly; usage/cost may be missing (provider: {provider}, request_id: {request_id})"
+            );
+        }
+    });
+
+    Ok(response)
+}
+
+impl StreamUsageCollector {
+    fn new(request_model: Option<String>) -> Self {
+        Self {
+            model: request_model,
+            ..Self::default()
+        }
+    }
+
+    fn consume_chunk(&mut self, provider: &str, chunk: &[u8]) {
+        self.line_buffer.extend_from_slice(chunk);
+        while let Some(newline_idx) = self.line_buffer.iter().position(|b| *b == b'\n') {
+            let mut line_bytes: Vec<u8> = self.line_buffer.drain(..=newline_idx).collect();
+            if line_bytes.last() == Some(&b'\n') {
+                line_bytes.pop();
+            }
+            if line_bytes.last() == Some(&b'\r') {
+                line_bytes.pop();
+            }
+            let line = String::from_utf8_lossy(&line_bytes);
+            self.handle_line(provider, &line);
+        }
+    }
+
+    fn finish(&mut self, provider: &str) {
+        if !self.line_buffer.is_empty() {
+            let mut trailing_line = std::mem::take(&mut self.line_buffer);
+            if trailing_line.last() == Some(&b'\r') {
+                trailing_line.pop();
+            }
+            let trailing_line = String::from_utf8_lossy(&trailing_line);
+            self.handle_line(provider, &trailing_line);
+        }
+        self.flush_event(provider);
+    }
+
+    fn into_parts(self) -> (Option<String>, Option<TokenUsage>) {
+        (self.model, self.usage)
+    }
+
+    fn handle_line(&mut self, provider: &str, line: &str) {
+        if line.is_empty() {
+            self.flush_event(provider);
+            return;
+        }
+        if let Some(data) = line.strip_prefix("data:") {
+            if !self.event_data.is_empty() {
+                self.event_data.push('\n');
+            }
+            self.event_data.push_str(data.trim_start());
+        }
+    }
+
+    fn flush_event(&mut self, provider: &str) {
+        if self.event_data.is_empty() {
+            return;
+        }
+        let payload = std::mem::take(&mut self.event_data);
+        self.consume_event_payload(provider, payload.trim());
+    }
+
+    fn consume_event_payload(&mut self, provider: &str, payload: &str) {
+        if payload.is_empty() || payload == "[DONE]" {
+            return;
+        }
+        let Ok(body_json) = serde_json::from_str::<serde_json::Value>(payload) else {
+            return;
+        };
+
+        if self.model.is_none()
+            && let Some(model) = extract_stream_model(provider, &body_json)
+        {
+            self.model = Some(model.to_string());
+        }
+
+        match provider {
+            "openai" => {
+                if let Some(usage) = parse_openai_usage(&body_json) {
+                    self.usage = Some(usage);
+                }
+            }
+            "anthropic" => {
+                if let Some(usage) = parse_anthropic_usage(&body_json) {
+                    self.usage = Some(usage);
+                }
+                if let Some(input_tokens) = extract_anthropic_stream_input_tokens(&body_json) {
+                    self.anthropic_input_tokens = Some(input_tokens);
+                }
+                if let Some(output_tokens) = extract_anthropic_stream_output_tokens(&body_json) {
+                    self.anthropic_output_tokens = Some(output_tokens);
+                }
+                if let (Some(input_tokens), Some(output_tokens)) =
+                    (self.anthropic_input_tokens, self.anthropic_output_tokens)
+                {
+                    self.usage = Some(TokenUsage {
+                        input_tokens,
+                        output_tokens,
+                        total_tokens: input_tokens + output_tokens,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn extract_stream_model<'a>(provider: &str, body: &'a serde_json::Value) -> Option<&'a str> {
+    match provider {
+        "anthropic" => body.get("model").and_then(|v| v.as_str()).or_else(|| {
+            body.get("message")
+                .and_then(|message| message.get("model"))
+                .and_then(|v| v.as_str())
+        }),
+        _ => body.get("model").and_then(|v| v.as_str()),
+    }
+}
+
+fn extract_anthropic_stream_input_tokens(body: &serde_json::Value) -> Option<u64> {
+    body.get("usage")
+        .and_then(|usage| usage.get("input_tokens"))
+        .and_then(|v| v.as_u64())
+        .or_else(|| {
+            body.get("message")
+                .and_then(|message| message.get("usage"))
+                .and_then(|usage| usage.get("input_tokens"))
+                .and_then(|v| v.as_u64())
+        })
+}
+
+fn extract_anthropic_stream_output_tokens(body: &serde_json::Value) -> Option<u64> {
+    body.get("usage")
+        .and_then(|usage| usage.get("output_tokens"))
+        .and_then(|v| v.as_u64())
+        .or_else(|| {
+            body.get("message")
+                .and_then(|message| message.get("usage"))
+                .and_then(|usage| usage.get("output_tokens"))
+                .and_then(|v| v.as_u64())
+        })
+}
+
 fn build_proxy_response(upstream_resp: reqwest::Response) -> Response {
     let status = StatusCode::from_u16(upstream_resp.status().as_u16())
         .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -954,6 +1889,8 @@ mod tests {
         ));
         assert!(!wildcard_path_match("/repos/*", "/orgs/openai"));
         assert!(wildcard_path_match("*", "/anything"));
+        assert!(wildcard_path_match("**", "/repos/owner/repo"));
+        assert!(wildcard_path_match("***", "/orgs/openai/teams/devs"));
     }
 
     #[test]
@@ -1023,5 +1960,173 @@ mod tests {
     #[test]
     fn content_length_header_is_always_skipped() {
         assert!(should_skip_header("content-length", &[]));
+    }
+
+    #[test]
+    fn model_allowlist_check_is_case_insensitive() {
+        let allowed = vec!["gpt-4o-mini".to_string(), "claude-sonnet".to_string()];
+        assert!(model_allowed("GPT-4O-MINI", &allowed));
+        assert!(!model_allowed("gpt-4o", &allowed));
+    }
+
+    #[test]
+    fn openai_include_usage_injection_is_scoped_to_chat_completions_path() {
+        assert!(openai_stream_include_usage_supported_path(
+            "/v1/chat/completions"
+        ));
+        assert!(openai_stream_include_usage_supported_path(
+            "/chat/completions"
+        ));
+        assert!(!openai_stream_include_usage_supported_path("/v1/responses"));
+        assert!(!openai_stream_include_usage_supported_path(
+            "/v1/embeddings"
+        ));
+    }
+
+    #[test]
+    fn ensure_openai_stream_include_usage_injects_when_missing() {
+        let mut headers = HeaderMap::new();
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
+        let body = axum::body::Bytes::from(
+            r#"{"model":"gpt-4o-mini","stream":true,"messages":[{"role":"user","content":"hi"}]}"#,
+        );
+
+        let updated = ensure_openai_stream_include_usage(&headers, &body, true);
+        let json: serde_json::Value = serde_json::from_slice(&updated).unwrap();
+        assert_eq!(
+            json["stream_options"]["include_usage"].as_bool(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn ensure_openai_stream_include_usage_preserves_existing_value() {
+        let mut headers = HeaderMap::new();
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
+        let body = axum::body::Bytes::from(
+            r#"{"model":"gpt-4o-mini","stream":true,"stream_options":{"include_usage":false}}"#,
+        );
+
+        let updated = ensure_openai_stream_include_usage(&headers, &body, true);
+        let json: serde_json::Value = serde_json::from_slice(&updated).unwrap();
+        assert_eq!(
+            json["stream_options"]["include_usage"].as_bool(),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn parse_openai_usage_and_compute_cost() {
+        let mut pricing = std::collections::HashMap::new();
+        pricing.insert(
+            "gpt-4o-mini".to_string(),
+            ModelPricing {
+                input_per_million_usd: 0.15,
+                output_per_million_usd: 0.60,
+            },
+        );
+
+        let body = serde_json::json!({
+            "model": "gpt-4o-mini",
+            "usage": {
+                "prompt_tokens": 1000,
+                "completion_tokens": 2000,
+                "total_tokens": 3000
+            }
+        });
+        let cost = parse_llm_usage_and_cost(
+            "openai",
+            None,
+            &serde_json::to_vec(&body).unwrap(),
+            &pricing,
+        )
+        .unwrap();
+
+        let expected = (1000.0 * 0.15 / 1_000_000.0) + (2000.0 * 0.60 / 1_000_000.0);
+        assert!((cost - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn parse_anthropic_usage_and_compute_cost() {
+        let mut pricing = std::collections::HashMap::new();
+        pricing.insert(
+            "claude-sonnet".to_string(),
+            ModelPricing {
+                input_per_million_usd: 3.0,
+                output_per_million_usd: 15.0,
+            },
+        );
+
+        let body = serde_json::json!({
+            "model": "claude-sonnet-4-5",
+            "usage": {
+                "input_tokens": 500,
+                "output_tokens": 250
+            }
+        });
+        let cost = parse_llm_usage_and_cost(
+            "anthropic",
+            None,
+            &serde_json::to_vec(&body).unwrap(),
+            &pricing,
+        )
+        .unwrap();
+
+        let expected = (500.0 * 3.0 / 1_000_000.0) + (250.0 * 15.0 / 1_000_000.0);
+        assert!((cost - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn collect_openai_stream_usage_from_sse_events() {
+        let mut collector = StreamUsageCollector::new(Some("gpt-4o-mini".to_string()));
+        collector.consume_chunk(
+            "openai",
+            br#"data: {"id":"chatcmpl-1","model":"gpt-4o-mini","choices":[{"delta":{"content":"Hi"}}]}
+
+"#,
+        );
+        collector.consume_chunk(
+            "openai",
+            br#"data: {"id":"chatcmpl-1","model":"gpt-4o-mini","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":8,"total_tokens":20}}
+
+data: [DONE]
+
+"#,
+        );
+        collector.finish("openai");
+
+        let (model, usage) = collector.into_parts();
+        assert_eq!(model.as_deref(), Some("gpt-4o-mini"));
+        let usage = usage.expect("usage should be parsed");
+        assert_eq!(usage.input_tokens, 12);
+        assert_eq!(usage.output_tokens, 8);
+        assert_eq!(usage.total_tokens, 20);
+    }
+
+    #[test]
+    fn collect_anthropic_stream_usage_across_message_events() {
+        let mut collector = StreamUsageCollector::new(Some("claude-sonnet".to_string()));
+        collector.consume_chunk(
+            "anthropic",
+            br#"data: {"type":"message_start","message":{"model":"claude-sonnet-4-5","usage":{"input_tokens":33,"output_tokens":0}}}
+
+"#,
+        );
+        collector.consume_chunk(
+            "anthropic",
+            br#"data: {"type":"message_delta","usage":{"output_tokens":17}}
+
+data: {"type":"message_stop"}
+
+"#,
+        );
+        collector.finish("anthropic");
+
+        let (model, usage) = collector.into_parts();
+        assert_eq!(model.as_deref(), Some("claude-sonnet"));
+        let usage = usage.expect("usage should be parsed");
+        assert_eq!(usage.input_tokens, 33);
+        assert_eq!(usage.output_tokens, 17);
+        assert_eq!(usage.total_tokens, 50);
     }
 }

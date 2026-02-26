@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use fishnet_server::{
     alert::AlertStore,
+    audit::AuditStore,
     config::{config_channel, resolve_config_path},
     create_router,
     llm_guard::BaselineStore,
@@ -19,7 +20,6 @@ use fishnet_server::{
 use fishnet_server::{config::load_config, signer::StubSigner};
 #[cfg(target_os = "macos")]
 use security_framework::passwords::{get_generic_password, set_generic_password};
-#[cfg(target_os = "macos")]
 use zeroize::Zeroizing;
 
 #[tokio::main]
@@ -58,7 +58,9 @@ async fn main() {
         .clone()
         .or_else(fishnet_server::config::default_config_path)
         .unwrap_or_else(|| std::path::PathBuf::from(fishnet_server::constants::CONFIG_FILE));
-    let _watcher_guard = config_path.map(|path| spawn_config_watcher(path, config_tx));
+    let _watcher_guard = config_path
+        .clone()
+        .map(|path| spawn_config_watcher(path, config_tx.clone()));
 
     let baseline_store = Arc::new(match BaselineStore::default_path() {
         Some(path) => BaselineStore::with_persistence(path, load_baselines),
@@ -104,6 +106,23 @@ async fn main() {
         }
     });
 
+    let audit_store = Arc::new(match AuditStore::default_path() {
+        Some(path) => match AuditStore::open(path.clone()) {
+            Ok(store) => {
+                eprintln!("[fishnet] audit database opened at {}", path.display());
+                store
+            }
+            Err(e) => {
+                eprintln!("[fishnet] fatal: failed to open audit database: {e}");
+                std::process::exit(1);
+            }
+        },
+        None => {
+            eprintln!("[fishnet] fatal: could not determine home directory for audit database");
+            std::process::exit(1);
+        }
+    });
+
     let credential_store = Arc::new(match CredentialStore::default_path() {
         Some(path) => match open_credential_store(path.clone()) {
             Ok(store) => {
@@ -140,22 +159,25 @@ async fn main() {
         Arc::new(s)
     };
 
-    let state = AppState {
-        password_store: Arc::new(FilePasswordStore::new(FilePasswordStore::default_path())),
-        session_store: Arc::new(SessionStore::new()),
-        rate_limiter: Arc::new(LoginRateLimiter::new()),
-        proxy_rate_limiter: Arc::new(ProxyRateLimiter::new()),
+    let state = AppState::new(
+        Arc::new(FilePasswordStore::new(FilePasswordStore::default_path())),
+        Arc::new(SessionStore::new()),
+        Arc::new(LoginRateLimiter::new()),
+        Arc::new(ProxyRateLimiter::new()),
+        config_tx,
         config_rx,
-        config_path: config_path_for_state,
+        config_path_for_state,
         alert_store,
-        baseline_store: baseline_store.clone(),
+        audit_store,
+        baseline_store.clone(),
         spend_store,
         credential_store,
-        binance_order_lock: Arc::new(tokio::sync::Mutex::new(())),
-        http_client: reqwest::Client::new(),
-        onchain_store: Arc::new(OnchainStore::new()),
+        Arc::new(tokio::sync::Mutex::new(())),
+        reqwest::Client::new(),
+        Arc::new(OnchainStore::new()),
         signer,
-    };
+        std::time::Instant::now(),
+    );
 
     spawn_baseline_config_watcher(state.config_rx.clone(), baseline_store);
 
@@ -173,7 +195,21 @@ async fn main() {
 
     let host = std::env::var(fishnet_server::constants::ENV_FISHNET_HOST)
         .unwrap_or_else(|_| fishnet_server::constants::DEFAULT_HOST.into());
-    let addr = format!("{host}:{}", fishnet_server::constants::DEFAULT_PORT);
+    let port = match std::env::var(fishnet_server::constants::ENV_FISHNET_PORT) {
+        Ok(raw) => match raw.parse::<u16>() {
+            Ok(port) => port,
+            Err(e) => {
+                eprintln!(
+                    "[fishnet] fatal: invalid {}='{}': {e}",
+                    fishnet_server::constants::ENV_FISHNET_PORT,
+                    raw
+                );
+                std::process::exit(1);
+            }
+        },
+        Err(_) => fishnet_server::constants::DEFAULT_PORT,
+    };
+    let addr = format!("{host}:{port}");
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     eprintln!("[fishnet] listening on http://{addr}");
     axum::serve(listener, app).await.unwrap();
@@ -217,7 +253,11 @@ fn open_credential_store(path: std::path::PathBuf) -> Result<CredentialStore, St
     if let Ok(master_password) =
         std::env::var(fishnet_server::constants::ENV_FISHNET_MASTER_PASSWORD)
     {
-        let store = CredentialStore::open(path, &master_password)
+        unsafe {
+            std::env::remove_var(fishnet_server::constants::ENV_FISHNET_MASTER_PASSWORD);
+        }
+        let master_password = Zeroizing::new(master_password);
+        let store = CredentialStore::open(path, master_password.as_str())
             .map_err(|e| format!("failed to unlock vault with master password: {e}"))?;
         maybe_store_derived_key_in_keychain(&store);
         return Ok(store);

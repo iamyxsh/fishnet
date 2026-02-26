@@ -33,6 +33,14 @@ pub enum SignerError {
     SigningFailed(String),
     #[error("invalid hex for {field}: {reason}")]
     HexDecode { field: &'static str, reason: String },
+    #[error("invalid {field} length: expected {expected} bytes, got {actual}")]
+    InvalidFieldLength {
+        field: &'static str,
+        expected: usize,
+        actual: usize,
+    },
+    #[error("invalid permit value: {0}")]
+    ParsePermitValue(String),
 }
 
 #[async_trait]
@@ -128,30 +136,45 @@ impl StubSigner {
         struct_data.extend_from_slice(&expiry_bytes);
 
         let target_bytes = Self::decode_hex_field(&permit.target, "target")?;
-        let mut target_padded = [0u8; 32];
-        if target_bytes.len() <= 32 {
-            target_padded[32 - target_bytes.len()..].copy_from_slice(&target_bytes);
+        if target_bytes.len() != 20 {
+            return Err(SignerError::InvalidFieldLength {
+                field: "target",
+                expected: 20,
+                actual: target_bytes.len(),
+            });
         }
+        let mut target_padded = [0u8; 32];
+        target_padded[12..].copy_from_slice(&target_bytes);
         struct_data.extend_from_slice(&target_padded);
 
         let value_u256 = alloy_primitives::U256::from_str_radix(&permit.value, 10)
-            .unwrap_or(alloy_primitives::U256::ZERO);
+            .map_err(|e| SignerError::ParsePermitValue(e.to_string()))?;
         struct_data.extend_from_slice(&value_u256.to_be_bytes::<32>());
 
         let calldata_hash_bytes = Self::decode_hex_field(&permit.calldata_hash, "calldata_hash")?;
-        let mut calldata_padded = [0u8; 32];
-        if calldata_hash_bytes.len() == 32 {
-            calldata_padded.copy_from_slice(&calldata_hash_bytes);
+        if calldata_hash_bytes.len() != 32 {
+            return Err(SignerError::InvalidFieldLength {
+                field: "calldata_hash",
+                expected: 32,
+                actual: calldata_hash_bytes.len(),
+            });
         }
+        let mut calldata_padded = [0u8; 32];
+        calldata_padded.copy_from_slice(&calldata_hash_bytes);
         struct_data.extend_from_slice(&calldata_padded);
 
         let policy_padded = match &permit.policy_hash {
             Some(ph) => {
                 let ph_bytes = Self::decode_hex_field(ph, "policy_hash")?;
-                let mut padded = [0u8; 32];
-                if ph_bytes.len() == 32 {
-                    padded.copy_from_slice(&ph_bytes);
+                if ph_bytes.len() != 32 {
+                    return Err(SignerError::InvalidFieldLength {
+                        field: "policy_hash",
+                        expected: 32,
+                        actual: ph_bytes.len(),
+                    });
                 }
+                let mut padded = [0u8; 32];
+                padded.copy_from_slice(&ph_bytes);
                 padded
             }
             None => [0u8; 32],
@@ -277,6 +300,78 @@ mod tests {
         match err {
             SignerError::HexDecode { field, .. } => assert_eq!(field, "calldata_hash"),
             _ => panic!("expected hex decode error for calldata_hash"),
+        }
+    }
+
+    #[tokio::test]
+    async fn sign_permit_rejects_invalid_calldata_hash_length() {
+        let signer = StubSigner::new();
+        let mut permit = sample_permit();
+        permit.calldata_hash = format!("0x{}", "aa".repeat(31));
+        let err = signer.sign_permit(&permit).await.unwrap_err();
+        match err {
+            SignerError::InvalidFieldLength {
+                field,
+                expected,
+                actual,
+            } => {
+                assert_eq!(field, "calldata_hash");
+                assert_eq!(expected, 32);
+                assert_eq!(actual, 31);
+            }
+            _ => panic!("expected invalid field length error for calldata_hash"),
+        }
+    }
+
+    #[tokio::test]
+    async fn sign_permit_rejects_invalid_value() {
+        let signer = StubSigner::new();
+        let mut permit = sample_permit();
+        permit.value = "not-a-number".to_string();
+        let err = signer.sign_permit(&permit).await.unwrap_err();
+        match err {
+            SignerError::ParsePermitValue(_) => {}
+            _ => panic!("expected parse permit value error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn sign_permit_rejects_invalid_target_length() {
+        let signer = StubSigner::new();
+        let mut permit = sample_permit();
+        permit.target = format!("0x{}", "22".repeat(19));
+        let err = signer.sign_permit(&permit).await.unwrap_err();
+        match err {
+            SignerError::InvalidFieldLength {
+                field,
+                expected,
+                actual,
+            } => {
+                assert_eq!(field, "target");
+                assert_eq!(expected, 20);
+                assert_eq!(actual, 19);
+            }
+            _ => panic!("expected invalid field length error for target"),
+        }
+    }
+
+    #[tokio::test]
+    async fn sign_permit_rejects_invalid_policy_hash_length() {
+        let signer = StubSigner::new();
+        let mut permit = sample_permit();
+        permit.policy_hash = Some(format!("0x{}", "bb".repeat(31)));
+        let err = signer.sign_permit(&permit).await.unwrap_err();
+        match err {
+            SignerError::InvalidFieldLength {
+                field,
+                expected,
+                actual,
+            } => {
+                assert_eq!(field, "policy_hash");
+                assert_eq!(expected, 32);
+                assert_eq!(actual, 31);
+            }
+            _ => panic!("expected invalid field length error for policy_hash"),
         }
     }
 }

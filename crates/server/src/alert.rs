@@ -18,6 +18,8 @@ pub enum AlertError {
     Db(#[from] rusqlite::Error),
     #[error("task join error: {0}")]
     Join(#[from] tokio::task::JoinError),
+    #[error("state poisoned: {0}")]
+    Poisoned(String),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -95,6 +97,12 @@ pub struct AlertStore {
     last_cleanup_at: AtomicI64,
 }
 
+fn poison_to_sqlite_error(resource: &str) -> rusqlite::Error {
+    rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(format!(
+        "{resource} mutex is poisoned"
+    ))))
+}
+
 impl AlertStore {
     pub fn open(path: PathBuf) -> Result<Self, rusqlite::Error> {
         if let Some(parent) = path.parent() {
@@ -122,7 +130,10 @@ impl AlertStore {
     }
 
     fn migrate(&self) -> Result<(), rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| poison_to_sqlite_error("alerts database connection"))?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS alerts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -156,7 +167,9 @@ impl AlertStore {
         let svc = service.clone();
         let msg = message.clone();
         let rowid = tokio::task::spawn_blocking(move || -> Result<i64, AlertError> {
-            let conn = conn.lock().unwrap();
+            let conn = conn
+                .lock()
+                .map_err(|_| AlertError::Poisoned("alerts database connection".to_string()))?;
             conn.execute(
                 "INSERT INTO alerts (alert_type, severity, service, message, timestamp, dismissed)
                  VALUES (?1, ?2, ?3, ?4, ?5, 0)",
@@ -167,7 +180,7 @@ impl AlertStore {
         .await??;
 
         Ok(Alert {
-            id: format!("alert_{rowid:03}"),
+            id: format!("alert_{rowid}"),
             alert_type,
             severity,
             service,
@@ -180,7 +193,9 @@ impl AlertStore {
     pub async fn list(&self) -> Result<Vec<Alert>, AlertError> {
         let conn = self.conn.clone();
         tokio::task::spawn_blocking(move || -> Result<Vec<Alert>, AlertError> {
-            let conn = conn.lock().unwrap();
+            let conn = conn
+                .lock()
+                .map_err(|_| AlertError::Poisoned("alerts database connection".to_string()))?;
             let mut stmt = conn.prepare(
                 "SELECT id, alert_type, severity, service, message, timestamp, dismissed
                  FROM alerts ORDER BY id ASC",
@@ -191,7 +206,7 @@ impl AlertStore {
                 let severity_str: String = row.get(2)?;
                 let dismissed_int: i64 = row.get(6)?;
                 Ok(Alert {
-                    id: format!("alert_{rowid:03}"),
+                    id: format!("alert_{rowid}"),
                     alert_type: str_to_alert_type(&type_str),
                     severity: str_to_severity(&severity_str),
                     service: row.get(3)?,
@@ -220,7 +235,9 @@ impl AlertStore {
         let message = message.to_string();
         let one_hour_ago = chrono::Utc::now().timestamp() - 3600;
         tokio::task::spawn_blocking(move || -> Result<bool, AlertError> {
-            let conn = conn.lock().unwrap();
+            let conn = conn
+                .lock()
+                .map_err(|_| AlertError::Poisoned("alerts database connection".to_string()))?;
             let count: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM alerts
                  WHERE alert_type = 'onchain_denied' AND message = ?1 AND timestamp > ?2",
@@ -242,7 +259,9 @@ impl AlertStore {
         }
         let conn = self.conn.clone();
         tokio::task::spawn_blocking(move || -> Result<bool, AlertError> {
-            let conn = conn.lock().unwrap();
+            let conn = conn
+                .lock()
+                .map_err(|_| AlertError::Poisoned("alerts database connection".to_string()))?;
             let updated = conn.execute(
                 "UPDATE alerts SET dismissed = 1 WHERE id = ?1",
                 params![numeric_id],
@@ -257,7 +276,9 @@ impl AlertStore {
         let now = chrono::Utc::now().timestamp();
         let cutoff = now - (retention_days as i64 * 24 * 60 * 60);
         tokio::task::spawn_blocking(move || -> Result<(), AlertError> {
-            let conn = conn.lock().unwrap();
+            let conn = conn
+                .lock()
+                .map_err(|_| AlertError::Poisoned("alerts database connection".to_string()))?;
             conn.execute("DELETE FROM alerts WHERE timestamp < ?1", params![cutoff])?;
             Ok(())
         })

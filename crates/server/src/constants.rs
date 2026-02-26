@@ -6,6 +6,7 @@ pub const FISHNET_DIR: &str = ".fishnet";
 pub const AUTH_FILE: &str = "auth.json";
 pub const SPEND_DB_FILE: &str = "fishnet.db";
 pub const ALERTS_DB_FILE: &str = "alerts.db";
+pub const AUDIT_DB_FILE: &str = "audit.db";
 pub const BASELINES_FILE: &str = "baselines.json";
 pub const VAULT_DB_FILE: &str = "vault.db";
 pub const CONFIG_FILE: &str = "fishnet.toml";
@@ -32,7 +33,12 @@ pub const DEFAULT_PORT: u16 = 8473;
 
 pub const ENV_FISHNET_CONFIG: &str = "FISHNET_CONFIG";
 pub const ENV_FISHNET_HOST: &str = "FISHNET_HOST";
+pub const ENV_FISHNET_PORT: &str = "FISHNET_PORT";
+pub const ENV_OPENAI_API_BASE: &str = "FISHNET_OPENAI_API_BASE";
+pub const ENV_ANTHROPIC_API_BASE: &str = "FISHNET_ANTHROPIC_API_BASE";
+// CI/automation override only; production should prefer derived-key keychain flow.
 pub const ENV_FISHNET_MASTER_PASSWORD: &str = "FISHNET_MASTER_PASSWORD";
+// Recommended production flow for vault unlock material persistence.
 pub const ENV_FISHNET_STORE_DERIVED_KEY_IN_KEYCHAIN: &str = "FISHNET_STORE_DERIVED_KEY_IN_KEYCHAIN";
 pub const ENV_FISHNET_KEYCHAIN_SERVICE: &str = "FISHNET_KEYCHAIN_SERVICE";
 pub const ENV_FISHNET_KEYCHAIN_ACCOUNT: &str = "FISHNET_KEYCHAIN_ACCOUNT";

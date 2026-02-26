@@ -15,6 +15,7 @@ pub struct FishnetConfig {
 
 impl FishnetConfig {
     pub fn validate(&mut self) -> Result<(), String> {
+        self.llm.validate()?;
         self.binance.validate()?;
         for (name, service) in &self.custom {
             service.validate(name)?;
@@ -32,10 +33,35 @@ pub struct LlmConfig {
     pub daily_budget_usd: f64,
     pub budget_warning_pct: u8,
     pub rate_limit_per_minute: u32,
+    pub allowed_models: Vec<String>,
+    pub model_pricing: HashMap<String, ModelPricing>,
 }
 
 impl Default for LlmConfig {
     fn default() -> Self {
+        let mut model_pricing = HashMap::new();
+        model_pricing.insert(
+            "gpt-4o".to_string(),
+            ModelPricing {
+                input_per_million_usd: 2.50,
+                output_per_million_usd: 10.0,
+            },
+        );
+        model_pricing.insert(
+            "gpt-4o-mini".to_string(),
+            ModelPricing {
+                input_per_million_usd: 0.15,
+                output_per_million_usd: 0.60,
+            },
+        );
+        model_pricing.insert(
+            "claude-sonnet".to_string(),
+            ModelPricing {
+                input_per_million_usd: 3.0,
+                output_per_million_usd: 15.0,
+            },
+        );
+
         Self {
             prompt_drift: PromptDriftConfig::default(),
             prompt_size_guard: PromptSizeGuardConfig::default(),
@@ -43,6 +69,63 @@ impl Default for LlmConfig {
             daily_budget_usd: 20.0,
             budget_warning_pct: 80,
             rate_limit_per_minute: 60,
+            allowed_models: Vec::new(),
+            model_pricing,
+        }
+    }
+}
+
+impl LlmConfig {
+    pub fn validate(&mut self) -> Result<(), String> {
+        for model in &mut self.allowed_models {
+            *model = model.trim().to_string();
+        }
+        self.allowed_models.retain(|m| !m.is_empty());
+
+        let mut normalized_pricing = HashMap::with_capacity(self.model_pricing.len());
+        let mut normalized_sources = HashMap::with_capacity(self.model_pricing.len());
+        for (model, pricing) in std::mem::take(&mut self.model_pricing) {
+            let trimmed_model = model.trim().to_string();
+            if trimmed_model.is_empty() {
+                return Err("llm.model_pricing contains an empty model key".to_string());
+            }
+            if !pricing.input_per_million_usd.is_finite() || pricing.input_per_million_usd < 0.0 {
+                return Err(format!(
+                    "llm.model_pricing.{trimmed_model}.input_per_million_usd must be a non-negative finite number"
+                ));
+            }
+            if !pricing.output_per_million_usd.is_finite() || pricing.output_per_million_usd < 0.0 {
+                return Err(format!(
+                    "llm.model_pricing.{trimmed_model}.output_per_million_usd must be a non-negative finite number"
+                ));
+            }
+
+            if let Some(original) = normalized_sources.get(&trimmed_model) {
+                return Err(format!(
+                    "llm.model_pricing contains duplicate model keys after trimming: '{original}' and '{model}' both normalize to '{trimmed_model}'"
+                ));
+            }
+            normalized_sources.insert(trimmed_model.clone(), model);
+            normalized_pricing.insert(trimmed_model, pricing);
+        }
+        self.model_pricing = normalized_pricing;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ModelPricing {
+    pub input_per_million_usd: f64,
+    pub output_per_million_usd: f64,
+}
+
+impl Default for ModelPricing {
+    fn default() -> Self {
+        Self {
+            input_per_million_usd: 0.0,
+            output_per_million_usd: 0.0,
         }
     }
 }
@@ -207,6 +290,22 @@ impl Default for BinanceConfig {
 
 impl BinanceConfig {
     pub fn validate(&mut self) -> Result<(), String> {
+        if !self.max_order_value_usd.is_finite() || self.max_order_value_usd < 0.0 {
+            return Err(
+                "binance.max_order_value_usd must be a non-negative finite number".to_string(),
+            );
+        }
+        if !self.daily_volume_cap_usd.is_finite() || self.daily_volume_cap_usd < 0.0 {
+            return Err(
+                "binance.daily_volume_cap_usd must be a non-negative finite number".to_string(),
+            );
+        }
+        if self.enabled && self.base_url.trim().is_empty() {
+            return Err(
+                "binance.base_url must be set and non-empty when binance is enabled".to_string(),
+            );
+        }
+
         if self.recv_window_ms == 0 {
             self.recv_window_ms = 5_000;
         }
@@ -226,6 +325,7 @@ pub struct CustomServiceConfig {
     pub base_url: String,
     pub auth_header: String,
     pub auth_value_prefix: String,
+    pub auth_value_env: String,
     pub blocked_endpoints: Vec<String>,
     pub rate_limit: u32,
     pub rate_limit_window_seconds: u64,
@@ -237,6 +337,7 @@ impl Default for CustomServiceConfig {
             base_url: String::new(),
             auth_header: "Authorization".to_string(),
             auth_value_prefix: "Bearer ".to_string(),
+            auth_value_env: String::new(),
             blocked_endpoints: Vec::new(),
             rate_limit: 100,
             rate_limit_window_seconds: 3600,
@@ -274,4 +375,72 @@ pub enum GuardAction {
 #[serde(rename_all = "snake_case")]
 pub enum HashAlgorithm {
     Keccak256,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn llm_model_pricing_keys_are_trimmed() {
+        let mut cfg = LlmConfig::default();
+        cfg.model_pricing.clear();
+        cfg.model_pricing.insert(
+            " gpt-4o-mini ".to_string(),
+            ModelPricing {
+                input_per_million_usd: 0.15,
+                output_per_million_usd: 0.60,
+            },
+        );
+
+        cfg.validate().unwrap();
+        assert!(cfg.model_pricing.contains_key("gpt-4o-mini"));
+    }
+
+    #[test]
+    fn llm_model_pricing_rejects_duplicate_keys_after_trim() {
+        let mut cfg = LlmConfig::default();
+        cfg.model_pricing.clear();
+        cfg.model_pricing.insert(
+            "gpt-4o-mini".to_string(),
+            ModelPricing {
+                input_per_million_usd: 0.15,
+                output_per_million_usd: 0.60,
+            },
+        );
+        cfg.model_pricing.insert(
+            "  gpt-4o-mini  ".to_string(),
+            ModelPricing {
+                input_per_million_usd: 0.15,
+                output_per_million_usd: 0.60,
+            },
+        );
+
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("duplicate model keys after trimming"));
+    }
+
+    #[test]
+    fn binance_validate_rejects_invalid_limits_and_requires_base_url_when_enabled() {
+        let mut cfg = BinanceConfig {
+            enabled: true,
+            base_url: "   ".to_string(),
+            max_order_value_usd: -1.0,
+            daily_volume_cap_usd: 100.0,
+            allow_delete_open_orders: false,
+            recv_window_ms: 5_000,
+        };
+
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("max_order_value_usd"));
+
+        cfg.max_order_value_usd = 100.0;
+        cfg.daily_volume_cap_usd = f64::INFINITY;
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("daily_volume_cap_usd"));
+
+        cfg.daily_volume_cap_usd = 100.0;
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("base_url"));
+    }
 }

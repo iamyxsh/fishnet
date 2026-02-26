@@ -4,11 +4,12 @@ use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha3::{Digest, Keccak256};
 use tokio::sync::Mutex;
 
 use crate::alert::{AlertSeverity, AlertType};
+use crate::audit::{self, NewAuditEntry};
 use crate::signer::FishnetPermit;
 use crate::state::AppState;
 
@@ -40,7 +41,7 @@ impl OnchainStore {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct SubmitRequest {
     pub target: String,
     pub calldata: String,
@@ -51,6 +52,13 @@ pub struct SubmitRequest {
 struct PolicyDenial {
     reason: String,
     limit: String,
+}
+
+#[derive(Clone)]
+struct OnchainAuditContext {
+    action: String,
+    policy_version_hash: audit::merkle::H256,
+    intent_hash: audit::merkle::H256,
 }
 
 fn check_policy(
@@ -160,8 +168,18 @@ pub async fn submit_handler(
     Json(req): Json<SubmitRequest>,
 ) -> impl IntoResponse {
     let config = state.config();
+    let audit_ctx = build_onchain_audit_context(&state, &config, &req);
 
     if !config.onchain.enabled {
+        log_onchain_audit_decision(
+            &state,
+            &audit_ctx,
+            "denied",
+            Some("Onchain module is disabled. Enable in fishnet.toml".to_string()),
+            None,
+            None,
+        )
+        .await;
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
@@ -177,6 +195,15 @@ pub async fn submit_handler(
         let vc = &config.onchain.permits.verifying_contract;
         let vc_hex = vc.strip_prefix("0x").unwrap_or(vc);
         if vc.is_empty() {
+            log_onchain_audit_decision(
+                &state,
+                &audit_ctx,
+                "denied",
+                Some("verifying_contract not configured in [onchain.permits]".to_string()),
+                None,
+                None,
+            )
+            .await;
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
@@ -188,6 +215,18 @@ pub async fn submit_handler(
                 .into_response();
         }
         if vc_hex.len() != 40 || !vc_hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            log_onchain_audit_decision(
+                &state,
+                &audit_ctx,
+                "denied",
+                Some(
+                    "verifying_contract must be a valid Ethereum address (0x + 40 hex characters)"
+                        .to_string(),
+                ),
+                None,
+                None,
+            )
+            .await;
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
@@ -202,6 +241,15 @@ pub async fn submit_handler(
 
     let target_hex = req.target.strip_prefix("0x").unwrap_or(&req.target);
     if target_hex.len() != 40 || !target_hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        log_onchain_audit_decision(
+            &state,
+            &audit_ctx,
+            "denied",
+            Some("target must be a valid Ethereum address (0x + 40 hex characters)".to_string()),
+            None,
+            None,
+        )
+        .await;
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
@@ -265,6 +313,16 @@ pub async fn submit_handler(
             denial.reason, denial.limit
         );
 
+        log_onchain_audit_decision(
+            &state,
+            &audit_ctx,
+            "denied",
+            Some(denial.reason.clone()),
+            None,
+            None,
+        )
+        .await;
+
         return Json(serde_json::json!({
             "status": "denied",
             "reason": denial.reason,
@@ -282,6 +340,15 @@ pub async fn submit_handler(
         Ok(n) => n,
         Err(e) => {
             eprintln!("[fishnet] nonce generation failed: {e}");
+            log_onchain_audit_decision(
+                &state,
+                &audit_ctx,
+                "denied",
+                Some(format!("nonce generation failed: {e}")),
+                None,
+                None,
+            )
+            .await;
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -299,6 +366,15 @@ pub async fn submit_handler(
     {
         Ok(bytes) => bytes,
         Err(_) => {
+            log_onchain_audit_decision(
+                &state,
+                &audit_ctx,
+                "denied",
+                Some("calldata is not valid hex".to_string()),
+                None,
+                None,
+            )
+            .await;
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
@@ -314,6 +390,15 @@ pub async fn submit_handler(
     let calldata_hash_hex = format!("0x{}", hex::encode(calldata_hash));
 
     if alloy_primitives::U256::from_str_radix(&req.value, 10).is_err() {
+        log_onchain_audit_decision(
+            &state,
+            &audit_ctx,
+            "denied",
+            Some("value must be a valid uint256 decimal string".to_string()),
+            None,
+            None,
+        )
+        .await;
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
@@ -349,6 +434,15 @@ pub async fn submit_handler(
         Ok(sig) => format!("0x{}", hex::encode(&sig)),
         Err(e) => {
             eprintln!("[fishnet] signing failed: {e}");
+            log_onchain_audit_decision(
+                &state,
+                &audit_ctx,
+                "denied",
+                Some(format!("signing failed: {e}")),
+                None,
+                None,
+            )
+            .await;
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({
@@ -384,6 +478,16 @@ pub async fn submit_handler(
         req.target, req.chain_id, nonce
     );
 
+    log_onchain_audit_decision(
+        &state,
+        &audit_ctx,
+        "approved",
+        None,
+        Some(tx_value),
+        Some(permit_hash_str.clone()),
+    )
+    .await;
+
     Json(serde_json::json!({
         "status": "approved",
         "permit": {
@@ -400,6 +504,74 @@ pub async fn submit_handler(
         "signature": signature,
     }))
     .into_response()
+}
+
+fn build_onchain_audit_context(
+    state: &AppState,
+    config: &fishnet_types::config::FishnetConfig,
+    req: &SubmitRequest,
+) -> OnchainAuditContext {
+    let selector = extract_selector(&req.calldata).unwrap_or_else(|| "submit".to_string());
+    let action = format!("{selector} @ {}", req.target);
+    let payload = serde_json::to_value(req).unwrap_or_else(|_| serde_json::json!({}));
+
+    OnchainAuditContext {
+        action,
+        policy_version_hash: audit::policy_version_hash(&state.config_path, config),
+        intent_hash: audit::hash_json_intent(&payload),
+    }
+}
+
+async fn log_onchain_audit_decision(
+    state: &AppState,
+    ctx: &OnchainAuditContext,
+    decision: &str,
+    reason: Option<String>,
+    cost_usd: Option<f64>,
+    permit_hash_hex: Option<String>,
+) {
+    let permit_hash = match permit_hash_hex.as_deref() {
+        Some(raw) => match audit::merkle::h256_from_hex(raw) {
+            Some(parsed) => Some(parsed),
+            None => {
+                eprintln!(
+                    "[fishnet] warning: failed to parse permit_hash_hex into H256 (action: {}, value: {})",
+                    ctx.action, raw
+                );
+                None
+            }
+        },
+        None => None,
+    };
+
+    let entry = NewAuditEntry {
+        intent_type: "onchain_tx".to_string(),
+        service: "onchain".to_string(),
+        action: ctx.action.clone(),
+        decision: decision.to_string(),
+        reason,
+        cost_usd,
+        policy_version_hash: ctx.policy_version_hash,
+        intent_hash: ctx.intent_hash,
+        permit_hash,
+    };
+
+    if let Err(e) = state.audit_store.append(entry).await {
+        eprintln!("[fishnet] failed to append onchain audit entry: {e}");
+    }
+}
+
+fn extract_selector(calldata: &str) -> Option<String> {
+    let trimmed = calldata.strip_prefix("0x").unwrap_or(calldata);
+    if trimmed.len() < 8 {
+        return None;
+    }
+    let selector = &trimmed[..8];
+    if selector.chars().all(|c| c.is_ascii_hexdigit()) {
+        Some(format!("0x{}", selector.to_ascii_lowercase()))
+    } else {
+        None
+    }
 }
 
 pub async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
