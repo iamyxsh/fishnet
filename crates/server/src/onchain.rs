@@ -12,6 +12,7 @@ use crate::alert::{AlertSeverity, AlertType};
 use crate::audit::{self, NewAuditEntry};
 use crate::signer::FishnetPermit;
 use crate::state::AppState;
+use crate::webhook;
 
 pub struct OnchainStore {
     last_permit_at: AtomicI64,
@@ -293,18 +294,15 @@ pub async fn submit_handler(
                 .should_create_onchain_alert(&alert_msg)
                 .await
             {
-                if let Err(e) = state
-                    .alert_store
-                    .create(
-                        AlertType::OnchainDenied,
-                        AlertSeverity::Warning,
-                        "onchain",
-                        alert_msg,
-                    )
-                    .await
-                {
-                    eprintln!("[fishnet] failed to create onchain denied alert: {e}");
-                }
+                webhook::create_alert_and_dispatch(
+                    &state,
+                    AlertType::OnchainDenied,
+                    AlertSeverity::Warning,
+                    "onchain",
+                    alert_msg,
+                    "onchain_denied",
+                )
+                .await;
             }
         }
 

@@ -42,11 +42,8 @@ impl FilePasswordStore {
         }
     }
 
-    pub fn default_path() -> PathBuf {
-        let mut path = dirs::home_dir().expect("could not determine home directory");
-        path.push(constants::FISHNET_DIR);
-        path.push(constants::AUTH_FILE);
-        path
+    pub fn default_path() -> Option<PathBuf> {
+        constants::default_data_file(constants::AUTH_FILE)
     }
 
     fn hash_password(password: &str) -> String {

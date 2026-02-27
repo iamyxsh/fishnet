@@ -15,6 +15,7 @@ use url::form_urlencoded;
 use zeroize::Zeroizing;
 
 use crate::alert::{AlertSeverity, AlertType};
+use crate::anomaly::AnomalyKind;
 use crate::audit::{self, NewAuditEntry};
 use crate::constants;
 use crate::llm_guard::{
@@ -22,6 +23,7 @@ use crate::llm_guard::{
 };
 use crate::state::AppState;
 use crate::vault::DecryptedCredential;
+use crate::webhook;
 use fishnet_types::config::ModelPricing;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -124,18 +126,15 @@ pub async fn handler(
             .await
     {
         if config.alerts.rate_limit_hit {
-            if let Err(e) = state
-                .alert_store
-                .create(
-                    AlertType::RateLimitHit,
-                    AlertSeverity::Warning,
-                    &provider,
-                    format!("Rate limit exceeded for {provider}. Retry after {retry_after}s."),
-                )
-                .await
-            {
-                eprintln!("[fishnet] failed to create rate limit alert: {e}");
-            }
+            create_alert_and_dispatch(
+                &state,
+                AlertType::RateLimitHit,
+                AlertSeverity::Warning,
+                &provider,
+                format!("Rate limit exceeded for {provider}. Retry after {retry_after}s."),
+                "rate_limit_hit",
+            )
+            .await;
         }
         let message = format!("rate limit exceeded, retry after {retry_after}s");
         log_audit_decision(
@@ -248,6 +247,7 @@ pub async fn handler(
         .map(|value| value.to_string());
     let upstream_resp = match send_upstream(
         &state,
+        &provider,
         method,
         &headers,
         &target_url,
@@ -386,7 +386,16 @@ pub async fn binance_handler(
         .await;
     }
 
+    maybe_emit_request_anomalies(&state, "binance", &action).await;
+
     if method == Method::POST && route_path.starts_with("/sapi/v1/capital/withdraw/") {
+        emit_high_severity_denied_action_alert(
+            &state,
+            "binance",
+            &action,
+            "hard-blocked endpoint: withdrawals are disabled",
+        )
+        .await;
         return audited_json_error(
             &state,
             &audit_ctx,
@@ -402,6 +411,13 @@ pub async fn binance_handler(
     let is_delete_open_orders = method == Method::DELETE && route_path == "/api/v3/openOrders";
 
     if is_delete_open_orders && !config.binance.allow_delete_open_orders {
+        emit_high_severity_denied_action_alert(
+            &state,
+            "binance",
+            &action,
+            "blocked-by-default endpoint: DELETE /api/v3/openOrders",
+        )
+        .await;
         return audited_json_error(
             &state,
             &audit_ctx,
@@ -626,6 +642,7 @@ pub async fn binance_handler(
 
     let upstream_resp = match send_upstream(
         &state,
+        "binance",
         method,
         &headers,
         &target_url,
@@ -709,6 +726,7 @@ pub async fn custom_handler(
     };
 
     let action = format!("{} {}", method, rest);
+    let custom_service = format!("custom.{name}");
     let audit_ctx =
         build_api_audit_context(&state, &config, &name, &action, &method, uri.query(), &body);
 
@@ -731,6 +749,8 @@ pub async fn custom_handler(
         )
         .await;
     }
+
+    maybe_emit_request_anomalies(&state, &custom_service, &action).await;
 
     if service_cfg.rate_limit > 0
         && let Err(retry_after) = state
@@ -767,6 +787,13 @@ pub async fn custom_handler(
         .iter()
         .any(|pattern| endpoint_pattern_matches(pattern, &method, &rest))
     {
+        emit_high_severity_denied_action_alert(
+            &state,
+            &custom_service,
+            &action,
+            "blocked by custom policy",
+        )
+        .await;
         return audited_json_error(
             &state,
             &audit_ctx,
@@ -877,6 +904,7 @@ pub async fn custom_handler(
     let target_url = with_query(base_url, &rest, uri.query());
     let upstream_resp = match send_upstream(
         &state,
+        &custom_service,
         method,
         &headers,
         &target_url,
@@ -961,6 +989,7 @@ async fn enforce_llm_guards(
 
     if let Some(ref body_val) = body_json {
         let system_prompt = extract_system_prompt(provider, body_val);
+        let drift_alert_snapshot = snapshot_alert_ids(state).await;
         let drift_result = check_prompt_drift(
             &state.baseline_store,
             &state.alert_store,
@@ -970,12 +999,14 @@ async fn enforce_llm_guards(
             config.alerts.prompt_drift,
         )
         .await;
+        dispatch_new_alerts_of_type(state, drift_alert_snapshot, AlertType::PromptDrift).await;
 
         if let GuardDecision::Deny(msg) = drift_result {
             return Err((StatusCode::FORBIDDEN, msg));
         }
 
         let total_chars = count_prompt_chars(provider, body_val);
+        let size_alert_snapshot = snapshot_alert_ids(state).await;
         let size_result = check_prompt_size(
             &state.alert_store,
             provider,
@@ -984,6 +1015,7 @@ async fn enforce_llm_guards(
             config.alerts.prompt_size,
         )
         .await;
+        dispatch_new_alerts_of_type(state, size_alert_snapshot, AlertType::PromptSize).await;
 
         if let GuardDecision::Deny(msg) = size_result {
             return Err((StatusCode::FORBIDDEN, msg));
@@ -1127,8 +1159,225 @@ async fn record_provider_spend(state: &AppState, provider: &str, cost_usd: f64) 
         eprintln!("[fishnet] failed to record {provider} spend: {e}");
         false
     } else {
+        maybe_emit_budget_threshold_alerts(state, provider).await;
         true
     }
+}
+
+async fn maybe_emit_budget_threshold_alerts(state: &AppState, provider: &str) {
+    if !matches!(provider, "openai" | "anthropic") {
+        return;
+    }
+
+    let config = state.config();
+    let daily_budget_usd = config.llm.daily_budget_usd;
+    if !daily_budget_usd.is_finite() || daily_budget_usd <= 0.0 {
+        return;
+    }
+
+    let rows = match state.spend_store.today_service_totals().await {
+        Ok(rows) => rows,
+        Err(e) => {
+            eprintln!("[fishnet] failed to read spend totals for budget alerting: {e}");
+            return;
+        }
+    };
+
+    let spent_today_usd = rows
+        .into_iter()
+        .filter(|row| matches!(row.service.as_str(), "openai" | "anthropic"))
+        .map(|row| row.cost_usd)
+        .sum::<f64>();
+    let today = chrono::Utc::now().date_naive();
+
+    let alerts = match state.alert_store.list().await {
+        Ok(alerts) => alerts,
+        Err(e) => {
+            eprintln!("[fishnet] failed to read alert store for budget alerting: {e}");
+            return;
+        }
+    };
+
+    let has_today_warning = alerts.iter().any(|alert| {
+        alert.alert_type == AlertType::BudgetWarning
+            && alert.service == "llm"
+            && is_timestamp_in_utc_day(alert.timestamp, today)
+    });
+    let has_today_exceeded = alerts.iter().any(|alert| {
+        alert.alert_type == AlertType::BudgetExceeded
+            && alert.service == "llm"
+            && is_timestamp_in_utc_day(alert.timestamp, today)
+    });
+
+    if config.alerts.budget_exceeded && spent_today_usd >= daily_budget_usd && !has_today_exceeded {
+        create_alert_and_dispatch(
+            state,
+            AlertType::BudgetExceeded,
+            AlertSeverity::Critical,
+            "llm",
+            format!(
+                "LLM daily budget exceeded: spent ${spent_today_usd:.4} (limit ${daily_budget_usd:.4})"
+            ),
+            "budget_exceeded",
+        )
+        .await;
+        return;
+    }
+
+    if !config.alerts.budget_warning || has_today_warning || config.llm.budget_warning_pct == 0 {
+        return;
+    }
+
+    let warning_threshold =
+        daily_budget_usd * (f64::from(config.llm.budget_warning_pct).clamp(0.0, 100.0) / 100.0);
+    if spent_today_usd >= warning_threshold {
+        create_alert_and_dispatch(
+            state,
+            AlertType::BudgetWarning,
+            AlertSeverity::Warning,
+            "llm",
+            format!(
+                "LLM daily budget warning: spent ${spent_today_usd:.4} reached {}% of limit ${daily_budget_usd:.4}",
+                config.llm.budget_warning_pct
+            ),
+            "budget_warning",
+        )
+        .await;
+    }
+}
+
+fn is_timestamp_in_utc_day(timestamp: i64, day: chrono::NaiveDate) -> bool {
+    chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp, 0)
+        .is_some_and(|dt| dt.date_naive() == day)
+}
+
+async fn maybe_emit_request_anomalies(state: &AppState, service: &str, action: &str) {
+    let config = state.config();
+    if !(config.alerts.anomalous_volume || config.alerts.new_endpoint || config.alerts.time_anomaly)
+    {
+        return;
+    }
+
+    let events = {
+        let mut tracker = state.anomaly_tracker.lock().await;
+        tracker.observe(service, action, chrono::Utc::now())
+    };
+
+    for event in events {
+        match event.kind {
+            AnomalyKind::NewEndpoint if config.alerts.new_endpoint => {
+                create_alert_and_dispatch(
+                    state,
+                    AlertType::NewEndpoint,
+                    AlertSeverity::Warning,
+                    service,
+                    format!("New endpoint detected: {}", event.detail),
+                    "anomaly_new_endpoint",
+                )
+                .await;
+            }
+            AnomalyKind::VolumeSpike if config.alerts.anomalous_volume => {
+                create_alert_and_dispatch(
+                    state,
+                    AlertType::AnomalousVolume,
+                    AlertSeverity::Warning,
+                    service,
+                    format!("Anomalous request volume detected: {}", event.detail),
+                    "anomaly_volume",
+                )
+                .await;
+            }
+            AnomalyKind::TimeAnomaly if config.alerts.time_anomaly => {
+                create_alert_and_dispatch(
+                    state,
+                    AlertType::TimeAnomaly,
+                    AlertSeverity::Warning,
+                    service,
+                    format!("Time anomaly detected: {}", event.detail),
+                    "anomaly_time",
+                )
+                .await;
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn emit_high_severity_denied_action_alert(
+    state: &AppState,
+    service: &str,
+    action: &str,
+    reason: &str,
+) {
+    let config = state.config();
+    if !config.alerts.high_severity_denied_action {
+        return;
+    }
+
+    create_alert_and_dispatch(
+        state,
+        AlertType::HighSeverityDeniedAction,
+        AlertSeverity::Critical,
+        service,
+        format!("Denied high-severity action {action}: {reason}"),
+        "high_severity_denied_action",
+    )
+    .await;
+}
+
+async fn create_alert_and_dispatch(
+    state: &AppState,
+    alert_type: AlertType,
+    severity: AlertSeverity,
+    service: &str,
+    message: String,
+    context: &str,
+) {
+    webhook::create_alert_and_dispatch(state, alert_type, severity, service, message, context)
+        .await;
+}
+
+async fn snapshot_alert_ids(state: &AppState) -> Option<HashSet<String>> {
+    match state.alert_store.list().await {
+        Ok(alerts) => Some(alerts.into_iter().map(|alert| alert.id).collect()),
+        Err(e) => {
+            eprintln!("[fishnet] failed to snapshot alerts for webhook dispatch: {e}");
+            None
+        }
+    }
+}
+
+async fn dispatch_new_alerts_of_type(
+    state: &AppState,
+    before: Option<HashSet<String>>,
+    alert_type: AlertType,
+) {
+    let Some(before_ids) = before else {
+        return;
+    };
+
+    let alerts = match state.alert_store.list().await {
+        Ok(alerts) => alerts,
+        Err(e) => {
+            eprintln!("[fishnet] failed to read alerts for webhook dispatch: {e}");
+            return;
+        }
+    };
+
+    for alert in alerts
+        .into_iter()
+        .filter(|alert| alert.alert_type == alert_type && !before_ids.contains(&alert.id))
+    {
+        dispatch_alert_webhooks_with_logging(state, &alert, "llm_guard").await;
+    }
+}
+
+async fn dispatch_alert_webhooks_with_logging(
+    state: &AppState,
+    alert: &crate::alert::Alert,
+    context: &str,
+) {
+    webhook::dispatch_alert_webhooks_with_logging(state, alert, context).await;
 }
 
 fn parse_llm_usage_and_cost(
@@ -1538,6 +1787,7 @@ fn hmac_sha256_hex(key: &[u8], message: &[u8]) -> Result<String, String> {
 
 async fn send_upstream(
     state: &AppState,
+    service: &str,
     method: Method,
     headers: &HeaderMap,
     target_url: &str,
@@ -1545,7 +1795,9 @@ async fn send_upstream(
     skip_headers: &[String],
     extra_headers: &[(String, HeaderValue)],
 ) -> Result<reqwest::Response, Response> {
-    let mut upstream_req = state.http_client.request(method, target_url);
+    let mut upstream_req = state
+        .http_client_for_service(service)
+        .request(method, target_url);
 
     for (name, value) in headers {
         if should_skip_header(name.as_str(), skip_headers) {

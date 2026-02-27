@@ -31,6 +31,10 @@ pub enum AlertType {
     BudgetExceeded,
     OnchainDenied,
     RateLimitHit,
+    AnomalousVolume,
+    NewEndpoint,
+    TimeAnomaly,
+    HighSeverityDeniedAction,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -60,6 +64,10 @@ fn alert_type_to_str(t: AlertType) -> &'static str {
         AlertType::BudgetExceeded => "budget_exceeded",
         AlertType::OnchainDenied => "onchain_denied",
         AlertType::RateLimitHit => "rate_limit_hit",
+        AlertType::AnomalousVolume => "anomalous_volume",
+        AlertType::NewEndpoint => "new_endpoint",
+        AlertType::TimeAnomaly => "time_anomaly",
+        AlertType::HighSeverityDeniedAction => "high_severity_denied_action",
     }
 }
 
@@ -71,6 +79,10 @@ fn str_to_alert_type(s: &str) -> AlertType {
         "budget_exceeded" => AlertType::BudgetExceeded,
         "onchain_denied" => AlertType::OnchainDenied,
         "rate_limit_hit" => AlertType::RateLimitHit,
+        "anomalous_volume" => AlertType::AnomalousVolume,
+        "new_endpoint" => AlertType::NewEndpoint,
+        "time_anomaly" => AlertType::TimeAnomaly,
+        "high_severity_denied_action" => AlertType::HighSeverityDeniedAction,
         _ => AlertType::PromptDrift,
     }
 }
@@ -297,10 +309,7 @@ impl AlertStore {
     }
 
     pub fn default_path() -> Option<PathBuf> {
-        let mut path = dirs::home_dir()?;
-        path.push(constants::FISHNET_DIR);
-        path.push(constants::ALERTS_DB_FILE);
-        Some(path)
+        constants::default_data_file(constants::ALERTS_DB_FILE)
     }
 }
 
@@ -394,6 +403,10 @@ pub async fn get_alert_config(State(state): State<AppState>) -> impl IntoRespons
             "budget_exceeded": config.alerts.budget_exceeded,
             "onchain_denied": config.alerts.onchain_denied,
             "rate_limit_hit": config.alerts.rate_limit_hit,
+            "anomalous_volume": config.alerts.anomalous_volume,
+            "new_endpoint": config.alerts.new_endpoint,
+            "time_anomaly": config.alerts.time_anomaly,
+            "high_severity_denied_action": config.alerts.high_severity_denied_action,
         },
         "retention_days": config.alerts.retention_days,
     }))
@@ -407,6 +420,10 @@ pub struct UpdateAlertConfigRequest {
     pub budget_exceeded: Option<bool>,
     pub onchain_denied: Option<bool>,
     pub rate_limit_hit: Option<bool>,
+    pub anomalous_volume: Option<bool>,
+    pub new_endpoint: Option<bool>,
+    pub time_anomaly: Option<bool>,
+    pub high_severity_denied_action: Option<bool>,
     pub retention_days: Option<u32>,
 }
 
@@ -435,6 +452,18 @@ pub async fn update_alert_config(
     if let Some(v) = req.rate_limit_hit {
         updated.alerts.rate_limit_hit = v;
     }
+    if let Some(v) = req.anomalous_volume {
+        updated.alerts.anomalous_volume = v;
+    }
+    if let Some(v) = req.new_endpoint {
+        updated.alerts.new_endpoint = v;
+    }
+    if let Some(v) = req.time_anomaly {
+        updated.alerts.time_anomaly = v;
+    }
+    if let Some(v) = req.high_severity_denied_action {
+        updated.alerts.high_severity_denied_action = v;
+    }
     if let Some(v) = req.retention_days {
         updated.alerts.retention_days = v;
     }
@@ -449,6 +478,10 @@ pub async fn update_alert_config(
                 "budget_exceeded": updated.alerts.budget_exceeded,
                 "onchain_denied": updated.alerts.onchain_denied,
                 "rate_limit_hit": updated.alerts.rate_limit_hit,
+                "anomalous_volume": updated.alerts.anomalous_volume,
+                "new_endpoint": updated.alerts.new_endpoint,
+                "time_anomaly": updated.alerts.time_anomaly,
+                "high_severity_denied_action": updated.alerts.high_severity_denied_action,
             },
             "retention_days": updated.alerts.retention_days,
         }))

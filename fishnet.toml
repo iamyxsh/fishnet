@@ -1,8 +1,5 @@
 [binance]
-enabled = false
-# Explicitly set `enabled = true` only after configuring valid API credentials and
-# understanding production trading/rate-limit risks.
-# NOTE: this base_url is Binance production; prefer a sandbox/testnet URL when testing.
+enabled = true
 base_url = "https://api.binance.com"
 max_order_value_usd = 100.0
 daily_volume_cap_usd = 200.0
@@ -26,3 +23,19 @@ blocked_endpoints = [
 ]
 rate_limit = 2 # Intentionally conservative safety default for local/demo use; tune per workload.
 rate_limit_window_seconds = 60
+
+[http]
+# Upstream connection timeout.
+connect_timeout_ms = 5000
+# Set to 0 to disable global request timeout (recommended for long streaming responses).
+request_timeout_ms = 0
+# Keep-alive idle timeout for upstream pooled connections.
+pool_idle_timeout_secs = 90
+# Max idle pooled connections per upstream host.
+pool_max_idle_per_host = 16
+# Optional per-upstream pool overrides (keys: openai, anthropic, binance, custom.<name>).
+# [http.upstream_pool_max_idle_per_host]
+# openai = 32
+# anthropic = 24
+# binance = 12
+# "custom.github" = 8

@@ -460,10 +460,7 @@ impl SpendStore {
     }
 
     pub fn default_path() -> Option<PathBuf> {
-        let mut path = dirs::home_dir()?;
-        path.push(constants::FISHNET_DIR);
-        path.push(constants::SPEND_DB_FILE);
-        Some(path)
+        constants::default_data_file(constants::SPEND_DB_FILE)
     }
 
     pub async fn record_permit(&self, entry: &PermitEntry<'_>) -> Result<i64, SpendError> {

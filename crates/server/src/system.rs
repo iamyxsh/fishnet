@@ -13,6 +13,7 @@ use crate::state::AppState;
 #[derive(Debug, Clone, Serialize)]
 struct PublicFishnetConfig {
     llm: fishnet_types::config::LlmConfig,
+    http: fishnet_types::config::HttpClientConfig,
     dashboard: fishnet_types::config::DashboardConfig,
     alerts: fishnet_types::config::AlertsConfig,
     onchain: fishnet_types::config::OnchainConfig,
@@ -169,6 +170,7 @@ fn to_public_config(config: &fishnet_types::config::FishnetConfig) -> PublicFish
 
     PublicFishnetConfig {
         llm: config.llm.clone(),
+        http: config.http.clone(),
         dashboard: config.dashboard.clone(),
         alerts: config.alerts.clone(),
         onchain: config.onchain.clone(),

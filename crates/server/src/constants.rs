@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 pub const OPENAI_API_BASE: &str = "https://api.openai.com";
 pub const ANTHROPIC_API_BASE: &str = "https://api.anthropic.com";
 pub const BINANCE_API_BASE: &str = "https://api.binance.com";
@@ -32,6 +34,7 @@ pub const DEFAULT_HOST: &str = "127.0.0.1";
 pub const DEFAULT_PORT: u16 = 8473;
 
 pub const ENV_FISHNET_CONFIG: &str = "FISHNET_CONFIG";
+pub const ENV_FISHNET_DATA_DIR: &str = "FISHNET_DATA_DIR";
 pub const ENV_FISHNET_HOST: &str = "FISHNET_HOST";
 pub const ENV_FISHNET_PORT: &str = "FISHNET_PORT";
 pub const ENV_OPENAI_API_BASE: &str = "FISHNET_OPENAI_API_BASE";
@@ -43,3 +46,33 @@ pub const ENV_FISHNET_STORE_DERIVED_KEY_IN_KEYCHAIN: &str = "FISHNET_STORE_DERIV
 pub const ENV_FISHNET_KEYCHAIN_SERVICE: &str = "FISHNET_KEYCHAIN_SERVICE";
 pub const ENV_FISHNET_KEYCHAIN_ACCOUNT: &str = "FISHNET_KEYCHAIN_ACCOUNT";
 pub const ENV_FISHNET_VAULT_REQUIRE_MLOCK: &str = "FISHNET_VAULT_REQUIRE_MLOCK";
+
+#[cfg(target_os = "macos")]
+const DEFAULT_SYSTEM_DATA_DIR: &str = "/Library/Application Support/Fishnet";
+#[cfg(target_os = "linux")]
+const DEFAULT_SYSTEM_DATA_DIR: &str = "/var/lib/fishnet";
+
+pub fn default_data_dir() -> Option<PathBuf> {
+    if let Ok(raw) = std::env::var(ENV_FISHNET_DATA_DIR) {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed));
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        return Some(PathBuf::from(DEFAULT_SYSTEM_DATA_DIR));
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        dirs::home_dir().map(|h| h.join(FISHNET_DIR))
+    }
+}
+
+pub fn default_data_file(file_name: &str) -> Option<PathBuf> {
+    let mut path = default_data_dir()?;
+    path.push(file_name);
+    Some(path)
+}

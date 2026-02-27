@@ -138,10 +138,7 @@ impl BaselineStore {
     }
 
     pub fn default_path() -> Option<PathBuf> {
-        let mut path = dirs::home_dir()?;
-        path.push(constants::FISHNET_DIR);
-        path.push(constants::BASELINES_FILE);
-        Some(path)
+        constants::default_data_file(constants::BASELINES_FILE)
     }
 }
 

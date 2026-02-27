@@ -1,4 +1,5 @@
 pub mod alert;
+pub mod anomaly;
 pub mod audit;
 pub mod auth;
 pub mod config;
@@ -20,6 +21,7 @@ pub mod state;
 pub mod system;
 pub mod vault;
 pub mod watch;
+pub mod webhook;
 
 use axum::{
     Router,
@@ -50,6 +52,11 @@ pub fn create_router(state: AppState) -> Router {
             "/api/alerts/config",
             get(alert::get_alert_config).put(alert::update_alert_config),
         )
+        .route(
+            "/api/alerts/webhook-config",
+            get(webhook::get_webhook_config).post(webhook::update_webhook_config),
+        )
+        .route("/api/alerts/webhook-test", post(webhook::test_webhook))
         .route("/api/spend", get(spend::get_spend))
         .route(
             "/api/spend/budgets",
@@ -101,6 +108,7 @@ mod tests {
 
     use axum::body::Body;
     use axum::http::{HeaderMap, Request, StatusCode, Uri};
+    use axum::response::IntoResponse;
     use axum::routing::any as any_route;
     use axum::{Json, Router as AxumRouter};
     use http_body_util::BodyExt;
@@ -144,6 +152,8 @@ mod tests {
             credential_store,
             Arc::new(tokio::sync::Mutex::new(())),
             reqwest::Client::new(),
+            std::collections::HashMap::new(),
+            Arc::new(tokio::sync::Mutex::new(anomaly::AnomalyTracker::default())),
             Arc::new(OnchainStore::new()),
             Arc::new(StubSigner::new()),
             std::time::Instant::now(),
@@ -364,6 +374,8 @@ mod tests {
             credential_store,
             Arc::new(tokio::sync::Mutex::new(())),
             reqwest::Client::new(),
+            std::collections::HashMap::new(),
+            Arc::new(tokio::sync::Mutex::new(anomaly::AnomalyTracker::default())),
             Arc::new(OnchainStore::new()),
             Arc::new(StubSigner::new()),
             std::time::Instant::now(),
@@ -424,6 +436,51 @@ mod tests {
             axum::serve(listener, router).await.unwrap();
         });
         (format!("http://{addr}"), handle)
+    }
+
+    async fn spawn_mock_webhook_target() -> (String, tokio::task::JoinHandle<()>) {
+        async fn webhook_handler(_: HeaderMap, _: Uri, _: axum::body::Bytes) -> StatusCode {
+            StatusCode::NO_CONTENT
+        }
+
+        let router = AxumRouter::new().route("/hook", any_route(webhook_handler));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        (format!("http://{addr}/hook"), handle)
+    }
+
+    async fn spawn_flaky_webhook_target() -> (String, tokio::task::JoinHandle<()>) {
+        let call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&call_count);
+
+        let router = AxumRouter::new().route(
+            "/hook",
+            any_route(move |_: HeaderMap, _: Uri, _: axum::body::Bytes| {
+                let counter = Arc::clone(&counter);
+                async move {
+                    let call_index = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if call_index == 0 {
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(serde_json::json!({"error":"temporary failure"})),
+                        )
+                            .into_response()
+                    } else {
+                        StatusCode::NO_CONTENT.into_response()
+                    }
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        (format!("http://{addr}/hook"), handle)
     }
 
     #[tokio::test]
@@ -578,7 +635,7 @@ mod tests {
         let mut config = fishnet_types::config::FishnetConfig::default();
         config.binance.enabled = true;
         let (state, _tx) = test_state_with_config(dir.path(), config);
-        let app = create_router(state);
+        let app = create_router(state.clone());
 
         let resp = app
             .clone()
@@ -592,6 +649,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let alerts = state.alert_store.list().await.unwrap();
+        assert!(
+            alerts
+                .iter()
+                .any(|alert| alert.alert_type == alert::AlertType::HighSeverityDeniedAction)
+        );
     }
 
     #[tokio::test]
@@ -600,7 +663,7 @@ mod tests {
         let mut config = fishnet_types::config::FishnetConfig::default();
         config.binance.enabled = true;
         let (state, _tx) = test_state_with_config(dir.path(), config);
-        let app = create_router(state);
+        let app = create_router(state.clone());
 
         let resp = app
             .clone()
@@ -614,6 +677,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let alerts = state.alert_store.list().await.unwrap();
+        assert!(
+            alerts
+                .iter()
+                .any(|alert| alert.alert_type == alert::AlertType::HighSeverityDeniedAction)
+        );
     }
 
     #[tokio::test]
@@ -711,6 +780,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_anomaly_alerts_for_new_endpoint_and_volume_spike() {
+        let (base_url, mock_handle) = spawn_mock_upstream().await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = fishnet_types::config::FishnetConfig::default();
+        config.binance.enabled = true;
+        config.binance.base_url = base_url;
+        let (state, _tx) = test_state_with_config(dir.path(), config);
+        let app = create_router(state.clone());
+
+        for _ in 0..12 {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri("/binance/api/v3/ticker/price?symbol=BTCUSDT")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+        }
+
+        let alerts = state.alert_store.list().await.unwrap();
+        assert!(
+            alerts
+                .iter()
+                .any(|alert| alert.alert_type == alert::AlertType::NewEndpoint)
+        );
+        assert!(
+            alerts
+                .iter()
+                .any(|alert| alert.alert_type == alert::AlertType::AnomalousVolume)
+        );
+
+        mock_handle.abort();
+    }
+
+    #[tokio::test]
     async fn test_binance_order_limit_rejected_before_upstream() {
         let dir = tempfile::tempdir().unwrap();
         let mut config = fishnet_types::config::FishnetConfig::default();
@@ -782,7 +892,7 @@ mod tests {
         );
 
         let (state, _tx) = test_state_with_config(dir.path(), config);
-        let app = create_router(state);
+        let app = create_router(state.clone());
 
         let resp = app
             .clone()
@@ -796,6 +906,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let alerts = state.alert_store.list().await.unwrap();
+        assert!(
+            alerts
+                .iter()
+                .any(|alert| alert.alert_type == alert::AlertType::HighSeverityDeniedAction)
+        );
     }
 
     #[tokio::test]
@@ -1492,6 +1608,115 @@ mod tests {
         let reloaded: fishnet_types::config::FishnetConfig = toml::from_str(&content).unwrap();
         assert!(!reloaded.alerts.prompt_drift);
         assert!(reloaded.alerts.prompt_size);
+    }
+
+    #[tokio::test]
+    async fn test_webhook_config_and_test_send() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = create_router(test_state(dir.path()));
+        let token = setup_and_login(&app).await;
+        let (hook_url, hook_handle) = spawn_mock_webhook_target().await;
+
+        let resp = app
+            .clone()
+            .oneshot(authed_post(
+                "/api/alerts/webhook-config",
+                &token,
+                serde_json::json!({ "discord_url": hook_url }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp.into_body()).await;
+        assert_eq!(body["saved"], true);
+        assert_eq!(body["discord_configured"], true);
+
+        let resp = app
+            .clone()
+            .oneshot(authed_post(
+                "/api/alerts/webhook-test",
+                &token,
+                serde_json::json!({ "provider": "discord", "message": "ping" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp.into_body()).await;
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["configured_any"], true);
+        assert_eq!(body["results"][0]["provider"], "discord");
+        assert_eq!(body["results"][0]["sent"], true);
+
+        hook_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_webhook_config_clear_with_null() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = create_router(test_state(dir.path()));
+        let token = setup_and_login(&app).await;
+        let (hook_url, hook_handle) = spawn_mock_webhook_target().await;
+
+        let resp = app
+            .clone()
+            .oneshot(authed_post(
+                "/api/alerts/webhook-config",
+                &token,
+                serde_json::json!({ "discord_url": hook_url }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let resp = app
+            .clone()
+            .oneshot(authed_post(
+                "/api/alerts/webhook-config",
+                &token,
+                serde_json::json!({ "discord_url": null }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp.into_body()).await;
+        assert_eq!(body["discord_configured"], false);
+
+        hook_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_webhook_test_retries_after_temporary_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = create_router(test_state(dir.path()));
+        let token = setup_and_login(&app).await;
+        let (hook_url, hook_handle) = spawn_flaky_webhook_target().await;
+
+        let resp = app
+            .clone()
+            .oneshot(authed_post(
+                "/api/alerts/webhook-config",
+                &token,
+                serde_json::json!({ "discord_url": hook_url }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let resp = app
+            .clone()
+            .oneshot(authed_post(
+                "/api/alerts/webhook-test",
+                &token,
+                serde_json::json!({ "provider": "discord", "message": "retry me" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp.into_body()).await;
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["results"][0]["sent"], true);
+
+        hook_handle.abort();
     }
 
     #[tokio::test]

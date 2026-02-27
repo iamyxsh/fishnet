@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct FishnetConfig {
     pub llm: LlmConfig,
+    pub http: HttpClientConfig,
     pub dashboard: DashboardConfig,
     pub alerts: AlertsConfig,
     pub onchain: OnchainConfig,
@@ -16,6 +17,7 @@ pub struct FishnetConfig {
 impl FishnetConfig {
     pub fn validate(&mut self) -> Result<(), String> {
         self.llm.validate()?;
+        self.http.validate()?;
         self.binance.validate()?;
         for (name, service) in &self.custom {
             service.validate(name)?;
@@ -190,6 +192,65 @@ impl Default for DashboardConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+pub struct HttpClientConfig {
+    pub connect_timeout_ms: u64,
+    pub request_timeout_ms: u64,
+    pub pool_idle_timeout_secs: u64,
+    pub pool_max_idle_per_host: usize,
+    pub upstream_pool_max_idle_per_host: HashMap<String, usize>,
+}
+
+impl Default for HttpClientConfig {
+    fn default() -> Self {
+        Self {
+            connect_timeout_ms: 5_000,
+            request_timeout_ms: 0,
+            pool_idle_timeout_secs: 90,
+            pool_max_idle_per_host: 16,
+            upstream_pool_max_idle_per_host: HashMap::new(),
+        }
+    }
+}
+
+impl HttpClientConfig {
+    pub fn validate(&mut self) -> Result<(), String> {
+        if self.connect_timeout_ms == 0 {
+            self.connect_timeout_ms = 5_000;
+        }
+        if self.pool_idle_timeout_secs == 0 {
+            self.pool_idle_timeout_secs = 90;
+        }
+        if self.pool_max_idle_per_host == 0 {
+            self.pool_max_idle_per_host = 16;
+        }
+
+        let mut normalized = HashMap::with_capacity(self.upstream_pool_max_idle_per_host.len());
+        for (service, pool_size) in std::mem::take(&mut self.upstream_pool_max_idle_per_host) {
+            let service = service.trim().to_string();
+            if service.is_empty() {
+                return Err(
+                    "http.upstream_pool_max_idle_per_host contains an empty service key"
+                        .to_string(),
+                );
+            }
+            if pool_size == 0 {
+                return Err(format!(
+                    "http.upstream_pool_max_idle_per_host.{service} must be > 0"
+                ));
+            }
+            if normalized.insert(service.clone(), pool_size).is_some() {
+                return Err(format!(
+                    "http.upstream_pool_max_idle_per_host contains duplicate service key '{service}' after normalization"
+                ));
+            }
+        }
+        self.upstream_pool_max_idle_per_host = normalized;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AlertsConfig {
     pub prompt_drift: bool,
     pub prompt_size: bool,
@@ -197,6 +258,10 @@ pub struct AlertsConfig {
     pub budget_exceeded: bool,
     pub onchain_denied: bool,
     pub rate_limit_hit: bool,
+    pub anomalous_volume: bool,
+    pub new_endpoint: bool,
+    pub time_anomaly: bool,
+    pub high_severity_denied_action: bool,
     pub retention_days: u32,
 }
 
@@ -209,6 +274,10 @@ impl Default for AlertsConfig {
             budget_exceeded: true,
             onchain_denied: true,
             rate_limit_hit: true,
+            anomalous_volume: true,
+            new_endpoint: true,
+            time_anomaly: true,
+            high_severity_denied_action: true,
             retention_days: 30,
         }
     }
@@ -442,5 +511,29 @@ mod tests {
         cfg.daily_volume_cap_usd = 100.0;
         let err = cfg.validate().unwrap_err();
         assert!(err.contains("base_url"));
+    }
+
+    #[test]
+    fn http_validate_normalizes_upstream_pool_overrides_and_rejects_zero() {
+        let mut cfg = HttpClientConfig::default();
+        cfg.upstream_pool_max_idle_per_host
+            .insert(" openai ".to_string(), 32);
+        cfg.upstream_pool_max_idle_per_host
+            .insert("custom.github".to_string(), 4);
+        cfg.validate().unwrap();
+        assert_eq!(
+            cfg.upstream_pool_max_idle_per_host.get("openai"),
+            Some(&32usize)
+        );
+        assert_eq!(
+            cfg.upstream_pool_max_idle_per_host.get("custom.github"),
+            Some(&4usize)
+        );
+
+        let mut bad = HttpClientConfig::default();
+        bad.upstream_pool_max_idle_per_host
+            .insert("binance".to_string(), 0);
+        let err = bad.validate().unwrap_err();
+        assert!(err.contains("must be > 0"));
     }
 }
